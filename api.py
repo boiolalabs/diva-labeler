@@ -25,20 +25,25 @@ def get_client():
         try:
             client.login(handle, password)
             print(f"✅ Logged in as {handle}")
-            print(f"   DID: {client.me.did}")
+            try:
+                print(f"   DID: {client.me.did}")
+            except:
+                pass
         except Exception as e:
             print(f"❌ Login failed: {e}")
             raise
     
     return client
 
-def emit_badge_event(user_did, badge_name, negate=False):
+def emit_ozone_event(user_did, badge_name, negate=False):
     """
-    Função de alto nível para emitir eventos de moderação (Labels)
-    Usa 'emit_moderation_event' compatível com atproto 0.0.65+
+    Função de alto nível para emitir eventos de moderação VIA OZONE (atproto 0.0.65+)
     
-    - negate=False: ADICIONA o badge (createLabelVals=[badge])
-    - negate=True: REMOVE o badge (negateLabelVals=[badge])
+    Substitui o antigo com.atproto.admin.emitModerationEvent
+    Pelo novo: tools.ozone.moderation.emitEvent
+    
+    - negate=False: ADICIONA o badge
+    - negate=True: REMOVE o badge
     """
     c = get_client()
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -56,10 +61,11 @@ def emit_badge_event(user_did, badge_name, negate=False):
 
     print(f"🔄 {action_name} BADGE '{badge_name}' PARA {user_did}")
     
-    # 2. Montar o payload do evento manual
+    # 2. Montar o payload do evento (Tipagem Ozone)
+    # ATENÇÃO: Mudança de namespace para tools.ozone.moderation
     event_data = {
         "event": {
-            "$type": "com.atproto.admin.defs#modEventLabel",
+            "$type": "tools.ozone.moderation.defs#modEventLabel",
             "createLabelVals": create_vals,
             "negateLabelVals": negate_vals,
             "comment": "Changed via Diva Labeler API"
@@ -73,9 +79,11 @@ def emit_badge_event(user_did, badge_name, negate=False):
     }
 
     try:
-        # 3. Enviar evento
-        print(f"📤 Sending moderation event...")
-        response = c.com.atproto.admin.emit_moderation_event(data=event_data)
+        # 3. Enviar evento via OZONE
+        print(f"📤 Sending OZONE moderation event...")
+        
+        # PROXY CORRETO: tools.ozone.moderation.emit_event
+        response = c.tools.ozone.moderation.emit_event(data=event_data)
         
         print(f"✅ Success: {response}")
         return {
@@ -84,7 +92,7 @@ def emit_badge_event(user_did, badge_name, negate=False):
         }
         
     except Exception as e:
-        print(f"❌ Error in emit_moderation_event: {e}")
+        print(f"❌ Error in emit_event: {e}")
         return {
             "success": False,
             "error": str(e)
@@ -95,8 +103,8 @@ def home():
     return jsonify({
         'status': 'healthy',
         'service': 'Diva Labeler',
-        'version': '3.4.0',
-        'method': 'emit_moderation_event (0.0.65+ Compliant)',
+        'version': '3.5.0',
+        'method': 'tools.ozone.moderation.emit_event (Latest Standard)',
         'labeler': os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
     })
 
@@ -120,7 +128,7 @@ def apply_badge():
         print(f"\n{'='*60}\n📝 APPLYING BADGE\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
         
         # negate=False -> ADICIONAR
-        result = emit_badge_event(user_did, label_value, negate=False)
+        result = emit_ozone_event(user_did, label_value, negate=False)
         
         if result['success']:
             return jsonify({
@@ -148,7 +156,7 @@ def remove_badge():
         print(f"\n{'='*60}\n🗑️  REMOVING BADGE\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
         
         # negate=True -> REMOVER
-        result = emit_badge_event(user_did, label_value, negate=True)
+        result = emit_ozone_event(user_did, label_value, negate=True)
         
         if result['success']:
             return jsonify({'success': True, 'message': 'Badge removido com sucesso'})
@@ -177,8 +185,8 @@ def test_connection():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     print(f"\n{'='*60}")
-    print(f"🚀 DIVA LABELER v3.4.0")
+    print(f"🚀 DIVA LABELER v3.5.0")
     print(f"   Port: {port}")
-    print(f"   Method: emit_moderation_event")
+    print(f"   Method: tools.ozone.moderation.emit_event")
     print(f"{'='*60}\n")
     app.run(host='0.0.0.0', port=port)
