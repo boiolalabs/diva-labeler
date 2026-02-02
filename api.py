@@ -1,158 +1,135 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from atproto import Client, models
+from atproto import Client
 import os
-import sqlite3
-import json
+import mysql.connector
 from datetime import datetime, timezone
 
 app = Flask(__name__)
 CORS(app)
 
 # ============================================================================
-# CONFIGURAÇÃO DO BANCO DE DADOS (O "Bibliotecário")
+# CONEXÃO COM O MYSQL (Lê as variáveis do Render)
 # ============================================================================
-DB_NAME = "badges.db"
+def get_db_connection():
+    try:
+        return mysql.connector.connect(
+            host=os.getenv('DB_HOST'),      # O Render vai preencher isso com o IP
+            user=os.getenv('DB_USER'),      # O Render preenche o usuário
+            password=os.getenv('DB_PASSWORD'), # O Render preenche a senha
+            database=os.getenv('DB_NAME'),  # O Render preenche o nome do banco
+            autocommit=True,
+            connect_timeout=10 # Evita travar se o banco demorar
+        )
+    except Exception as e:
+        print(f"❌ Erro fatal ao conectar no DB: {e}")
+        return None
 
-def init_db():
-    """Cria a tabela de badges se não existir."""
-    with sqlite3.connect(DB_NAME) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS badges (
-                did TEXT,
-                val TEXT,
-                neg INTEGER,
-                cts TEXT,
-                PRIMARY KEY (did, val)
-            )
-        """)
-    print("📚 Banco de dados (SQLite) inicializado.")
+def get_active_badges_for_user(user_did):
+    """
+    Busca no MySQL quais badges o usuário tem aprovados.
+    """
+    badges = []
+    conn = get_db_connection()
+    
+    if not conn:
+        return []
 
-def save_badge_local(did, val, neg, cts):
-    """Salva ou remove o badge do banco local para leitura rápida."""
-    with sqlite3.connect(DB_NAME) as conn:
-        if neg:
-            # Se for negate (remover), deletamos do banco
-            conn.execute("DELETE FROM badges WHERE did = ? AND val = ?", (did, val))
-        else:
-            # Se for adicionar, gravamos (ou atualizamos)
-            conn.execute("""
-                INSERT OR REPLACE INTO badges (did, val, neg, cts)
-                VALUES (?, ?, ?, ?)
-            """, (did, val, 0, cts))
+    try:
+        cursor = conn.cursor(dictionary=True)
+        
+        # --- QUERY SQL (Ajuste para bater com sua tabela do Admin) ---
+        # Exemplo: Buscando da tabela 'requests' onde status é 'approved'
+        # Se sua tabela tem outro nome (ex: user_badges), troque aqui.
+        query = """
+            SELECT badge_slug, created_at 
+            FROM requests 
+            WHERE user_did = %s AND status = 'approved'
+        """
+        
+        cursor.execute(query, (user_did,))
+        results = cursor.fetchall()
+        
+        for row in results:
+            # Garante que temos uma data válida
+            cts_val = datetime.now(timezone.utc).isoformat()
+            if row.get('created_at'):
+                cts_val = row['created_at'].isoformat() + "Z"
 
-def get_badges_local(did):
-    """Lê os badges de um usuário específico."""
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.execute("SELECT val, cts FROM badges WHERE did = ?", (did,))
-        return cursor.fetchall()
-
-# Inicializa o banco ao ligar
-init_db()
+            badges.append({
+                "val": row['badge_slug'], # ID do badge (ex: 'maconheira')
+                "cts": cts_val
+            })
+            
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Erro na Query MySQL: {e}")
+        if conn and conn.is_connected():
+            conn.close()
+            
+    return badges
 
 # ============================================================================
 # CLIENTE BLUESKY
 # ============================================================================
 client = None
-
 def get_client():
     global client
     if client is None:
         client = Client()
-        handle = os.getenv('BLUESKY_HANDLE')
-        password = os.getenv('BLUESKY_PASSWORD')
-        if not password: raise ValueError('BLUESKY_PASSWORD not set')
-        client.login(handle, password)
+        try:
+            client.login(os.getenv('BLUESKY_HANDLE'), os.getenv('BLUESKY_PASSWORD'))
+        except:
+            print("⚠️ Erro no login do Bluesky (mas a leitura do banco segue funcionando)")
     return client
 
 # ============================================================================
-# 1. ROTA DE LEITURA (O QUE O APP DO BLUESKY CHAMA)
+# ROTA PRINCIPAL (Query Labels)
 # ============================================================================
 @app.route('/xrpc/com.atproto.label.queryLabels', methods=['GET'])
 def query_labels():
-    """
-    O App do Bluesky bate AQUI para saber quais badges mostrar.
-    """
+    # O App pergunta: "Quais badges esses usuários têm?"
     uri_patterns = request.args.getlist('uriPatterns')
     
     labels = []
-    c = get_client() # Precisamos do DID do labeler (nós mesmos)
-    my_did = c.me.did
+    
+    # Tenta pegar nosso DID, se falhar usa o fixo
+    try:
+        my_did = get_client().me.did
+    except:
+        my_did = "did:plc:bmx5j2ukbbixbn4lo5itsf5v"
 
-    # Para cada usuário que o App perguntou...
     for pattern in uri_patterns:
-        # Se for um DID de usuário (ex: did:plc:123...)
         if pattern.startswith('did:'):
-            badges = get_badges_local(pattern)
-            for val, cts in badges:
+            # 1. Consulta o MySQL
+            user_badges = get_active_badges_for_user(pattern)
+            
+            # 2. Formata a resposta para o Bluesky
+            for b in user_badges:
                 labels.append({
-                    "src": my_did,     # Quem deu o badge (nós)
-                    "uri": pattern,    # Quem recebeu
-                    "val": val,        # Nome do badge
-                    "cts": cts,        # Data
+                    "src": my_did,     # Nós (Emissor)
+                    "uri": pattern,    # Usuário (Receptor)
+                    "val": b['val'],   # Nome do Badge
+                    "cts": b['cts'],   # Data
                     "ver": 1
                 })
     
-    # Retorna no formato que o Bluesky exige
     return jsonify({
         "cursor": "0",
         "labels": labels
     })
 
-# ============================================================================
-# 2. ROTAS DE ESCRITA (ADMIN)
-# ============================================================================
-
-def apply_label_logic(subject_did, badge_name, negate=False):
-    c = get_client()
-    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    
-    # 1. Gravar no Repositório Oficial (Backup/Histórico)
-    try:
-        label_record = {
-            "$type": "com.atproto.label.defs",
-            "src": c.me.did,
-            "uri": subject_did,
-            "val": badge_name,
-            "neg": negate,
-            "cts": now
-        }
-        c.com.atproto.repo.create_record({
-            "repo": c.me.did,
-            "collection": "com.atproto.label.defs",
-            "record": label_record
-        })
-        print(f"✅ Gravado no Repo: {badge_name} -> {subject_did}")
-    except Exception as e:
-        print(f"⚠️ Erro ao gravar no repo (mas vou tentar salvar local): {e}")
-
-    # 2. Gravar no Banco Local (Para o App conseguir ler)
-    try:
-        save_badge_local(subject_did, badge_name, negate, now)
-        print(f"✅ Gravado no SQLite: {badge_name} -> {subject_did}")
-        return {"success": True}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-@app.route('/apply-badge', methods=['POST'])
-def apply_badge():
-    data = request.json
-    result = apply_label_logic(data.get('did'), data.get('label'), negate=False)
-    return jsonify(result), (200 if result['success'] else 500)
-
-@app.route('/remove-badge', methods=['POST'])
-def remove_badge():
-    data = request.json
-    result = apply_label_logic(data.get('did'), data.get('label'), negate=True)
-    return jsonify(result), (200 if result['success'] else 500)
-
 @app.route('/')
 def home():
+    # Rota de debug para saber se as variáveis estão carregadas (sem mostrar a senha)
+    db_host = os.getenv('DB_HOST', 'NÃO CONFIGURADO')
     return jsonify({
-        'status': 'online', 
-        'service': 'Diva Labeler v4.0 (Full)', 
-        'did': get_client().me.did
+        'status': 'online',
+        'service': 'Diva Labeler (MySQL)',
+        'connected_to_db_host': db_host
     })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
