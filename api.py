@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from atproto import Client, models
+from atproto import Client
 import os
 from datetime import datetime, timezone
 
@@ -32,42 +32,62 @@ def get_client():
     
     return client
 
-def create_label_native(subject_did, label_value, negate=False):
+def emit_badge_event(user_did, badge_name, negate=False):
     """
-    Criar label usando a função de alto nível emit_label (atproto 0.0.65+)
-    Isso evita erros de tipagem manual ($type) e gerencia o neg=True corretamente.
+    Função de alto nível para emitir eventos de moderação (Labels)
+    Usa 'emit_moderation_event' compatível com atproto 0.0.65+
+    
+    - negate=False: ADICIONA o badge (createLabelVals=[badge])
+    - negate=True: REMOVE o badge (negateLabelVals=[badge])
     """
     c = get_client()
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     
-    # Timestamp atual
-    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    # 1. Definir o que será criado e o que será negado
+    create_vals = []
+    negate_vals = []
     
-    print(f"📤 ATProto Emit Label")
-    print(f"   Subject: {subject_did}")
-    print(f"   Label: {label_value}")
-    print(f"   Negate: {negate}")
+    if negate:
+        negate_vals = [badge_name]
+        action_name = "REMOVING (NEGATE)"
+    else:
+        create_vals = [badge_name]
+        action_name = "ADDING (CREATE)"
+
+    print(f"🔄 {action_name} BADGE '{badge_name}' PARA {user_did}")
     
+    # 2. Montar o payload do evento manual
+    event_data = {
+        "event": {
+            "$type": "com.atproto.admin.defs#modEventLabel",
+            "createLabelVals": create_vals,
+            "negateLabelVals": negate_vals,
+            "comment": "Changed via Diva Labeler API"
+        },
+        "subject": {
+            "$type": "com.atproto.admin.defs#repoRef",
+            "did": user_did
+        },
+        "createdBy": c.me.did,
+        "createdAt": now
+    }
+
     try:
-        # CHAMADA OFICIAL DA LIB PARA LABELS
-        # A própria lib cuida da estrutura de dados e tipagem
-        response = c.emit_label(
-            subject=subject_did,
-            val=label_value,
-            neg=negate,
-            created_at=now
-        )
+        # 3. Enviar evento
+        print(f"📤 Sending moderation event...")
+        response = c.com.atproto.admin.emit_moderation_event(data=event_data)
         
-        print(f"   ✅ Success: {response}")
+        print(f"✅ Success: {response}")
         return {
-            'success': True,
-            'data': str(response)
+            "success": True,
+            "data": str(response)
         }
-            
+        
     except Exception as e:
-        print(f"   ❌ Error: {e}")
+        print(f"❌ Error in emit_moderation_event: {e}")
         return {
-            'success': False,
-            'error': str(e)
+            "success": False,
+            "error": str(e)
         }
 
 @app.route('/')
@@ -75,8 +95,8 @@ def home():
     return jsonify({
         'status': 'healthy',
         'service': 'Diva Labeler',
-        'version': '3.3.0',
-        'method': 'Native emit_label (Official Method)',
+        'version': '3.4.0',
+        'method': 'emit_moderation_event (0.0.65+ Compliant)',
         'labeler': os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
     })
 
@@ -94,13 +114,13 @@ def apply_badge():
         if not user_did or not label_value:
             return jsonify({'success': False, 'error': 'Missing parameters'}), 400
         
-        # Validar formato do DID
         if not user_did.startswith('did:'):
             return jsonify({'success': False, 'error': 'Invalid DID format'}), 400
             
-        print(f"\n{'='*60}\n📝 APPLYING BADGE (emit_label)\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
+        print(f"\n{'='*60}\n📝 APPLYING BADGE\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
         
-        result = create_label_native(user_did, label_value, negate=False)
+        # negate=False -> ADICIONAR
+        result = emit_badge_event(user_did, label_value, negate=False)
         
         if result['success']:
             return jsonify({
@@ -125,10 +145,10 @@ def remove_badge():
         if not user_did or not label_value:
             return jsonify({'success': False, 'error': 'Missing parameters'}), 400
             
-        print(f"\n{'='*60}\n🗑️  REMOVING BADGE (emit_label via neg=True)\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
+        print(f"\n{'='*60}\n🗑️  REMOVING BADGE\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
         
-        # Para remover, usamos neg=True
-        result = create_label_native(user_did, label_value, negate=True)
+        # negate=True -> REMOVER
+        result = emit_badge_event(user_did, label_value, negate=True)
         
         if result['success']:
             return jsonify({'success': True, 'message': 'Badge removido com sucesso'})
@@ -145,7 +165,7 @@ def test_connection():
         c = get_client()
         return jsonify({
             'success': True,
-            'message': 'Connected to Bluesky (Native Client)',
+            'message': 'Connected to Bluesky',
             'labeler': {
                 'did': c.me.did,
                 'handle': c.me.handle
@@ -157,8 +177,8 @@ def test_connection():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     print(f"\n{'='*60}")
-    print(f"🚀 DIVA LABELER v3.3.0")
+    print(f"🚀 DIVA LABELER v3.4.0")
     print(f"   Port: {port}")
-    print(f"   Method: emit_label (Best Practice)")
+    print(f"   Method: emit_moderation_event")
     print(f"{'='*60}\n")
     app.run(host='0.0.0.0', port=port)
