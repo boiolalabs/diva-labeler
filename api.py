@@ -58,10 +58,10 @@ def apply_label_via_repo(subject_did, badge_name, negate=False):
     
     print(f"🔄 {action_name} BADGE '{badge_name}' PARA {subject_did}")
 
-    # FIX 3.6.2: Usando Dicionário Puro em vez de Classe Tipada
-    # Isso evita o erro "module has no attribute ComAtprotoLabelDefsLabel"
+    # FIX 3.6.3: Ajuste fino do $type
+    # O servidor rejeitou '...defs#label', ele quer apenas '...defs'
     label_record = {
-        "$type": "com.atproto.label.defs#label", # O tipo oficial do Lexicon
+        "$type": "com.atproto.label.defs", # <--- AQUI ESTAVA O ERRO (removemos o #label)
         "src": c.me.did,      # Quem está dando o label (nós)
         "uri": subject_did,   # Quem está recebendo (o usuário)
         "val": badge_name,    # O nome do badge (ex: 'maconheira')
@@ -104,8 +104,8 @@ def home():
     return jsonify({
         'status': 'healthy',
         'service': 'Diva Labeler',
-        'version': '3.6.2',
-        'method': 'Repo Writer (Dict Fix)',
+        'version': '3.6.3',
+        'method': 'Repo Writer (Type Fix)',
         'note': 'Writes to com.atproto.label.defs collection',
         'labeler': os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
     })
@@ -185,8 +185,8 @@ def test_connection():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     print(f"\n{'='*60}")
-    print(f"🚀 DIVA LABELER v3.6.2")
+    print(f"🚀 DIVA LABELER v3.6.3")
     print(f"   Port: {port}")
-    print(f"   Method: Repo Writer (Dict Fix)")
+    print(f"   Method: Repo Writer (Type Fix)")
     print(f"{'='*60}\n")
     app.run(host='0.0.0.0', port=port)
