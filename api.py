@@ -76,7 +76,7 @@ def create_label_via_http(subject_did, label_value, negate=False):
     
     # Payload do label
     record = {
-        '$type': 'com.atproto.label.defs#label',
+        '$type': 'com.atproto.label.defs',  
         'src': c.me.did,
         'uri': subject_did,
         'val': label_value,
