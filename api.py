@@ -39,11 +39,9 @@ def emit_ozone_event(user_did, badge_name, negate=False):
     """
     Função de alto nível para emitir eventos de moderação VIA OZONE (atproto 0.0.65+)
     
-    Substitui o antigo com.atproto.admin.emitModerationEvent
-    Pelo novo: tools.ozone.moderation.emitEvent
-    
-    - negate=False: ADICIONA o badge
-    - negate=True: REMOVE o badge
+    FIX 401 (v3.7.0):
+    - Adicionado header 'atproto-proxy' para indicar que o evento é para o
+      nosso Serviço de Labeler, e não para o servidor global (PDS).
     """
     c = get_client()
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -62,7 +60,6 @@ def emit_ozone_event(user_did, badge_name, negate=False):
     print(f"🔄 {action_name} BADGE '{badge_name}' PARA {user_did}")
     
     # 2. Montar o payload do evento (Tipagem Ozone)
-    # ATENÇÃO: Mudança de namespace para tools.ozone.moderation
     event_data = {
         "event": {
             "$type": "tools.ozone.moderation.defs#modEventLabel",
@@ -77,13 +74,22 @@ def emit_ozone_event(user_did, badge_name, negate=False):
         "createdBy": c.me.did,
         "createdAt": now
     }
+    
+    # 3. HEADER MÁGICO DO PROXY
+    # "Ei PDS, mande isso para o meu serviço de labeler, não tente processar você mesmo"
+    proxy_header = {
+        'atproto-proxy': f'{c.me.did}#atproto_labeler'
+    }
 
     try:
-        # 3. Enviar evento via OZONE
-        print(f"📤 Sending OZONE moderation event...")
+        print(f"📤 Sending OZONE event with Proxy Header...")
+        print(f"   Proxy: {proxy_header['atproto-proxy']}")
         
-        # PROXY CORRETO: tools.ozone.moderation.emit_event
-        response = c.tools.ozone.moderation.emit_event(data=event_data)
+        # Enviar evento com headers
+        response = c.tools.ozone.moderation.emit_event(
+            data=event_data,
+            headers=proxy_header
+        )
         
         print(f"✅ Success: {response}")
         return {
@@ -103,8 +109,8 @@ def home():
     return jsonify({
         'status': 'healthy',
         'service': 'Diva Labeler',
-        'version': '3.5.0',
-        'method': 'tools.ozone.moderation.emit_event (Latest Standard)',
+        'version': '3.7.0',
+        'method': 'Ozone Proxy (Header Fixed)',
         'labeler': os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
     })
 
@@ -185,8 +191,8 @@ def test_connection():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     print(f"\n{'='*60}")
-    print(f"🚀 DIVA LABELER v3.5.0")
+    print(f"🚀 DIVA LABELER v3.7.0")
     print(f"   Port: {port}")
-    print(f"   Method: tools.ozone.moderation.emit_event")
+    print(f"   Method: Ozone Proxy")
     print(f"{'='*60}\n")
     app.run(host='0.0.0.0', port=port)
