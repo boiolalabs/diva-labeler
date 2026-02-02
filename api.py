@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from atproto import Client
-from atproto.xrpc_client.models import get_or_create
 import os
 from datetime import datetime, timezone
 
