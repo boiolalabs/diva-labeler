@@ -1,4 +1,4 @@
-atproto>=0.0.40
+atproto==0.0.65
 flask==3.0.0
 flask-cors==4.0.0
 gunicorn==21.2.0
