@@ -27,14 +27,6 @@ def get_client():
             client.login(handle, password)
             print(f"✅ Logged in as {handle}")
             print(f"   DID: {client.me.did}")
-            
-            # Testar acesso ao JWT
-            jwt = get_jwt_token(client)
-            if jwt:
-                print(f"   JWT: {jwt[:20]}...")
-            else:
-                print("   ⚠️  JWT not found!")
-                
         except Exception as e:
             print(f"❌ Login failed: {e}")
             raise
@@ -43,40 +35,26 @@ def get_client():
 
 def get_jwt_token(client):
     """
-    Obter JWT token do client de forma segura
-    Tenta múltiplos locais onde o JWT pode estar
+    Obter JWT token usando método interno da biblioteca
     """
-    # Tentar diferentes locais onde o JWT pode estar
-    
-    # Opção 1: session (mais comum)
-    if hasattr(client, 'session') and client.session:
-        if isinstance(client.session, dict):
-            return client.session.get('accessJwt') or client.session.get('access_jwt')
-        elif hasattr(client.session, 'access_jwt'):
-            return client.session.access_jwt
-        elif hasattr(client.session, 'accessJwt'):
-            return client.session.accessJwt
-    
-    # Opção 2: atributo direto
-    if hasattr(client, 'access_jwt'):
-        return client.access_jwt
-    
-    if hasattr(client, '_access_jwt'):
-        return client._access_jwt
-    
-    # Opção 3: dentro de _session
-    if hasattr(client, '_session') and client._session:
-        if isinstance(client._session, dict):
-            return client._session.get('accessJwt') or client._session.get('access_jwt')
-    
-    # Opção 4: método de autenticação
-    if hasattr(client, 'auth') and hasattr(client.auth, 'jwt'):
-        return client.auth.jwt
-    
-    print("⚠️  Could not find JWT token in client object")
-    print(f"   Available attributes: {dir(client)}")
-    
-    return None
+    try:
+        # SOLUÇÃO: Usar método interno _get_access_auth_headers()
+        auth_headers = client._get_access_auth_headers()
+        
+        if auth_headers and 'Authorization' in auth_headers:
+            # Extrair JWT do header "Bearer eyJ..."
+            auth_value = auth_headers['Authorization']
+            if auth_value.startswith('Bearer '):
+                jwt = auth_value[7:]  # Remove "Bearer "
+                print(f"   ✅ JWT: {jwt[:20]}...")
+                return jwt
+        
+        print("   ⚠️  No JWT in auth headers")
+        return None
+        
+    except Exception as e:
+        print(f"   ❌ Error getting JWT: {e}")
+        return None
 
 def create_label_via_http(subject_did, label_value, negate=False):
     """
@@ -84,7 +62,7 @@ def create_label_via_http(subject_did, label_value, negate=False):
     """
     c = get_client()
     
-    # Obter JWT
+    # Obter JWT usando método interno
     jwt = get_jwt_token(c)
     
     if not jwt:
@@ -120,7 +98,6 @@ def create_label_via_http(subject_did, label_value, negate=False):
     }
     
     print(f"📤 HTTP Request to: {endpoint}")
-    print(f"   Repo: {c.me.did}")
     print(f"   Subject: {subject_did}")
     print(f"   Label: {label_value}")
     print(f"   Negate: {negate}")
@@ -156,8 +133,8 @@ def home():
     return jsonify({
         'status': 'healthy',
         'service': 'Diva Labeler',
-        'version': '3.1.0',
-        'method': 'HTTP Direct API with JWT Fix',
+        'version': '4.0.0',
+        'method': 'Internal Auth Headers',
         'labeler': os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
     })
 
@@ -183,16 +160,14 @@ def apply_badge():
         if not user_did or not label_value:
             return jsonify({
                 'success': False,
-                'error': 'Missing parameters: did and label required',
-                'received': data
+                'error': 'Missing parameters: did and label required'
             }), 400
         
         # Validar formato do DID
         if not user_did.startswith('did:'):
             return jsonify({
                 'success': False,
-                'error': 'Invalid DID format. Must start with "did:"',
-                'received_did': user_did
+                'error': 'Invalid DID format'
             }), 400
         
         print(f"\n{'='*60}")
@@ -210,33 +185,26 @@ def apply_badge():
                 'success': True,
                 'message': f'Badge "{label_value}" aplicado com sucesso',
                 'user_did': user_did,
-                'label': label_value,
-                'data': result.get('data')
+                'label': label_value
             })
         else:
             print(f"\n❌ FAILED: {result.get('error')}\n")
             return jsonify({
                 'success': False,
-                'error': f'Failed to apply badge: {result["error"]}',
-                'status_code': result.get('status_code')
+                'error': f'Failed to apply badge: {result["error"]}'
             }), 500
         
     except Exception as e:
         print(f"\n❌ EXCEPTION: {e}\n")
         return jsonify({
             'success': False,
-            'error': str(e),
-            'error_type': type(e).__name__
+            'error': str(e)
         }), 500
 
 @app.route('/remove-badge', methods=['POST'])
 def remove_badge():
     """
     Remover badge de um usuário
-    Body: {
-        "did": "did:plc:abc123xyz",
-        "label": "arianators"
-    }
     """
     try:
         data = request.json
@@ -255,7 +223,6 @@ def remove_badge():
         print(f"   Badge: {label_value}")
         print(f"{'='*60}\n")
         
-        # Remover label via HTTP (negate=True)
         result = create_label_via_http(user_did, label_value, negate=True)
         
         if result['success']:
@@ -280,7 +247,7 @@ def remove_badge():
 
 @app.route('/test-connection', methods=['GET'])
 def test_connection():
-    """Testar conexão com Bluesky"""
+    """Testar conexão e JWT"""
     try:
         c = get_client()
         jwt = get_jwt_token(c)
@@ -292,7 +259,7 @@ def test_connection():
                 'did': c.me.did,
                 'handle': c.me.handle,
                 'has_jwt': bool(jwt),
-                'jwt_preview': jwt[:20] if jwt else None
+                'jwt_preview': jwt[:30] if jwt else None
             }
         })
     except Exception as e:
@@ -304,8 +271,7 @@ def test_connection():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     print(f"\n{'='*60}")
-    print(f"🚀 DIVA LABELER v3.1.0")
-    print(f"   Port: {port}")
-    print(f"   Method: HTTP Direct API with JWT Fix")
+    print(f"🚀 DIVA LABELER v4.0.0")
+    print(f"   Method: Internal Auth Headers")
     print(f"{'='*60}\n")
     app.run(host='0.0.0.0', port=port)
