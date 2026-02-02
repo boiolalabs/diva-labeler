@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from atproto import Client
 import os
+import requests
 from datetime import datetime, timezone
 
 app = Flask(__name__)
@@ -26,18 +27,77 @@ def get_client():
             client.login(handle, password)
             print(f"✅ Logged in as {handle}")
             print(f"   DID: {client.me.did}")
+            print(f"   Access JWT: {client.me.access_jwt[:20]}...")
         except Exception as e:
             print(f"❌ Login failed: {e}")
             raise
     
     return client
 
+def create_label_via_http(subject_did, label_value, negate=False):
+    """
+    Criar label usando API HTTP direta do AT Protocol
+    Não depende dos métodos Python instáveis
+    """
+    c = get_client()
+    
+    # Endpoint para criar labels
+    endpoint = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
+    
+    # Timestamp atual
+    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    
+    # Payload do label
+    record = {
+        '$type': 'com.atproto.label.defs#label',
+        'src': c.me.did,
+        'uri': subject_did,
+        'val': label_value,
+        'neg': negate,
+        'cts': now
+    }
+    
+    # Request body
+    body = {
+        'repo': c.me.did,
+        'collection': 'com.atproto.label.defs',
+        'record': record
+    }
+    
+    # Headers com autenticação
+    headers = {
+        'Authorization': f'Bearer {c.me.access_jwt}',
+        'Content-Type': 'application/json'
+    }
+    
+    print(f"📤 HTTP Request to: {endpoint}")
+    print(f"   Body: {body}")
+    
+    # Fazer request
+    response = requests.post(endpoint, json=body, headers=headers)
+    
+    print(f"📥 HTTP Response: {response.status_code}")
+    print(f"   Body: {response.text}")
+    
+    if response.status_code in [200, 201]:
+        return {
+            'success': True,
+            'data': response.json()
+        }
+    else:
+        return {
+            'success': False,
+            'error': response.text,
+            'status_code': response.status_code
+        }
+
 @app.route('/')
 def home():
     return jsonify({
         'status': 'healthy',
         'service': 'Diva Labeler',
-        'version': '2.0.0',
+        'version': '3.0.0',
+        'method': 'HTTP Direct API',
         'labeler': os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
     })
 
@@ -77,67 +137,32 @@ def apply_badge():
         
         print(f"📝 Applying badge '{label_value}' to {user_did}")
         
-        # Get authenticated client
-        c = get_client()
+        # Aplicar label via HTTP
+        result = create_label_via_http(user_did, label_value, negate=False)
         
-        # Construir URI do subject (perfil do usuário)
-        subject_uri = user_did
-        
-        # Timestamp atual
-        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        
-        # ✅ MÉTODO CORRETO (testado e funcionando)
-        # Usar createLabel do namespace com.atproto.label
-        label_data = {
-            'uri': subject_uri,
-            'val': label_value,
-            'neg': False,  # False = aplicar, True = remover
-            'src': c.me.did,
-            'cts': now
-        }
-        
-        print(f"📤 Sending label data: {label_data}")
-        
-        # Chamar API de labels
-        response = c.com.atproto.label.create_label(
-            data=label_data
-        )
-        
-        print(f"✅ Label applied successfully: {response}")
-        
-        return jsonify({
-            'success': True,
-            'message': f'Badge "{label_value}" aplicado com sucesso',
-            'user_did': user_did,
-            'label': label_value,
-            'labeler_did': c.me.did
-        })
-        
-    except ValueError as e:
-        print(f"⚠️ Configuration error: {e}")
-        return jsonify({
-            'success': False,
-            'error': f'Configuration error: {str(e)}'
-        }), 500
-        
-    except AttributeError as e:
-        print(f"❌ API method error: {e}")
-        return jsonify({
-            'success': False,
-            'error': f'API method not found: {str(e)}',
-            'hint': 'The atproto library version may be incompatible'
-        }), 500
+        if result['success']:
+            print(f"✅ Badge applied successfully!")
+            return jsonify({
+                'success': True,
+                'message': f'Badge "{label_value}" aplicado com sucesso',
+                'user_did': user_did,
+                'label': label_value,
+                'data': result.get('data')
+            })
+        else:
+            print(f"❌ Failed to apply badge: {result['error']}")
+            return jsonify({
+                'success': False,
+                'error': f'Failed to apply badge: {result["error"]}',
+                'status_code': result.get('status_code')
+            }), 500
         
     except Exception as e:
-        print(f"❌ Error applying badge: {e}")
-        print(f"   Error type: {type(e).__name__}")
+        print(f"❌ Error: {e}")
         return jsonify({
             'success': False,
             'error': str(e),
-            'details': {
-                'error_type': type(e).__name__,
-                'message': str(e)
-            }
+            'error_type': type(e).__name__
         }), 500
 
 @app.route('/remove-badge', methods=['POST'])
@@ -162,33 +187,24 @@ def remove_badge():
         
         print(f"🗑️ Removing badge '{label_value}' from {user_did}")
         
-        c = get_client()
+        # Remover label via HTTP (negate=True)
+        result = create_label_via_http(user_did, label_value, negate=True)
         
-        subject_uri = user_did
-        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        
-        # Remover label (neg=True)
-        label_data = {
-            'uri': subject_uri,
-            'val': label_value,
-            'neg': True,  # True = remover
-            'src': c.me.did,
-            'cts': now
-        }
-        
-        response = c.com.atproto.label.create_label(
-            data=label_data
-        )
-        
-        print(f"✅ Label removed successfully: {response}")
-        
-        return jsonify({
-            'success': True,
-            'message': 'Badge removido com sucesso'
-        })
+        if result['success']:
+            print(f"✅ Badge removed successfully!")
+            return jsonify({
+                'success': True,
+                'message': 'Badge removido com sucesso'
+            })
+        else:
+            print(f"❌ Failed to remove badge: {result['error']}")
+            return jsonify({
+                'success': False,
+                'error': f'Failed to remove badge: {result["error"]}'
+            }), 500
         
     except Exception as e:
-        print(f"❌ Error removing badge: {e}")
+        print(f"❌ Error: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -204,7 +220,8 @@ def test_connection():
             'message': 'Connected to Bluesky',
             'labeler': {
                 'did': c.me.did,
-                'handle': c.me.handle
+                'handle': c.me.handle,
+                'has_jwt': bool(c.me.access_jwt)
             }
         })
     except Exception as e:
@@ -215,5 +232,6 @@ def test_connection():
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
-    print(f"🚀 Starting Diva Labeler on port {port}")
+    print(f"🚀 Starting Diva Labeler v3.0.0 on port {port}")
+    print(f"   Method: HTTP Direct API")
     app.run(host='0.0.0.0', port=port)
