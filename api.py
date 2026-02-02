@@ -34,46 +34,33 @@ def get_client():
 
 def create_label_native(subject_did, label_value, negate=False):
     """
-    Criar label usando a biblioteca atproto com a sintaxe NOVA (0.0.65+)
-    Usa arguments: data={'repo': ..., 'collection': ..., 'record': ...}
+    Criar label usando a função de alto nível emit_label (atproto 0.0.65+)
+    Isso evita erros de tipagem manual ($type) e gerencia o neg=True corretamente.
     """
     c = get_client()
     
     # Timestamp atual
     now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     
-    # Payload do label
-    label_record = {
-        '$type': 'com.atproto.label.defs#label',
-        'src': c.me.did,
-        'uri': subject_did,
-        'val': label_value,
-        'neg': negate,
-        'cts': now
-    }
-    
-    # Estrutura de dados para o create_record
-    # ATENÇÃO: Na versão 0.0.65+, é obrigatório passar 'data' como dicionário
-    payload = {
-        'repo': c.me.did,
-        'collection': 'com.atproto.label.defs',
-        'record': label_record
-    }
-    
-    print(f"📤 ATProto Native Request")
-    print(f"   Repo: {c.me.did}")
+    print(f"📤 ATProto Emit Label")
     print(f"   Subject: {subject_did}")
     print(f"   Label: {label_value}")
     print(f"   Negate: {negate}")
     
     try:
-        # CHAMADA CORRIGIDA PARA ATPROTO 0.0.65+
-        response = c.com.atproto.repo.create_record(data=payload)
+        # CHAMADA OFICIAL DA LIB PARA LABELS
+        # A própria lib cuida da estrutura de dados e tipagem
+        response = c.emit_label(
+            subject=subject_did,
+            val=label_value,
+            neg=negate,
+            created_at=now
+        )
         
         print(f"   ✅ Success: {response}")
         return {
             'success': True,
-            'data': response.uri if hasattr(response, 'uri') else str(response)
+            'data': str(response)
         }
             
     except Exception as e:
@@ -88,8 +75,8 @@ def home():
     return jsonify({
         'status': 'healthy',
         'service': 'Diva Labeler',
-        'version': '3.2.0',
-        'method': 'Native ATProto Library (v0.0.65 Global Fix)',
+        'version': '3.3.0',
+        'method': 'Native emit_label (Official Method)',
         'labeler': os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
     })
 
@@ -111,7 +98,7 @@ def apply_badge():
         if not user_did.startswith('did:'):
             return jsonify({'success': False, 'error': 'Invalid DID format'}), 400
             
-        print(f"\n{'='*60}\n📝 APPLYING BADGE (Native)\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
+        print(f"\n{'='*60}\n📝 APPLYING BADGE (emit_label)\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
         
         result = create_label_native(user_did, label_value, negate=False)
         
@@ -138,8 +125,9 @@ def remove_badge():
         if not user_did or not label_value:
             return jsonify({'success': False, 'error': 'Missing parameters'}), 400
             
-        print(f"\n{'='*60}\n🗑️  REMOVING BADGE (Native)\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
+        print(f"\n{'='*60}\n🗑️  REMOVING BADGE (emit_label via neg=True)\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
         
+        # Para remover, usamos neg=True
         result = create_label_native(user_did, label_value, negate=True)
         
         if result['success']:
@@ -169,8 +157,8 @@ def test_connection():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     print(f"\n{'='*60}")
-    print(f"🚀 DIVA LABELER v3.2.0")
+    print(f"🚀 DIVA LABELER v3.3.0")
     print(f"   Port: {port}")
-    print(f"   Method: Native ATProto (0.0.65+ Syntax)")
+    print(f"   Method: emit_label (Best Practice)")
     print(f"{'='*60}\n")
     app.run(host='0.0.0.0', port=port)
