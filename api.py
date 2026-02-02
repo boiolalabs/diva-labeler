@@ -56,17 +56,18 @@ def apply_label_via_repo(subject_did, badge_name, negate=False):
     
     action_name = "REMOVING (Negate)" if negate else "ADDING"
     
-    # CORREÇÃO FEITA: Agora usa a variável correta 'subject_did' no print
     print(f"🔄 {action_name} BADGE '{badge_name}' PARA {subject_did}")
 
-    # 1. Criar o objeto Label usando o Modelo Oficial
-    label_record = models.ComAtprotoLabelDefsLabel(
-        src=c.me.did,      # Quem está dando o label (nós)
-        uri=subject_did,   # Quem está recebendo (o usuário)
-        val=badge_name,    # O nome do badge (ex: 'maconheira')
-        neg=negate,        # Se é true, anula um label anterior
-        cts=now            # Timestamp
-    )
+    # FIX 3.6.2: Usando Dicionário Puro em vez de Classe Tipada
+    # Isso evita o erro "module has no attribute ComAtprotoLabelDefsLabel"
+    label_record = {
+        "$type": "com.atproto.label.defs#label", # O tipo oficial do Lexicon
+        "src": c.me.did,      # Quem está dando o label (nós)
+        "uri": subject_did,   # Quem está recebendo (o usuário)
+        "val": badge_name,    # O nome do badge (ex: 'maconheira')
+        "neg": negate,        # Se é true, anula um label anterior
+        "cts": now            # Timestamp
+    }
 
     # 2. Montar o payload para o create_record
     data_payload = {
@@ -103,8 +104,8 @@ def home():
     return jsonify({
         'status': 'healthy',
         'service': 'Diva Labeler',
-        'version': '3.6.1',
-        'method': 'Repo Writer (Direct Record)',
+        'version': '3.6.2',
+        'method': 'Repo Writer (Dict Fix)',
         'note': 'Writes to com.atproto.label.defs collection',
         'labeler': os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
     })
@@ -184,8 +185,8 @@ def test_connection():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     print(f"\n{'='*60}")
-    print(f"🚀 DIVA LABELER v3.6.1")
+    print(f"🚀 DIVA LABELER v3.6.2")
     print(f"   Port: {port}")
-    print(f"   Method: Repo Writer (Simple)")
+    print(f"   Method: Repo Writer (Dict Fix)")
     print(f"{'='*60}\n")
     app.run(host='0.0.0.0', port=port)
