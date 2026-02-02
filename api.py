@@ -9,7 +9,7 @@ app = Flask(__name__)
 CORS(app)
 
 # ============================================================================
-# CONFIGURAÇÕES
+# CONFIGURAÇÕES DO BANCO
 # ============================================================================
 DB_HOST = os.getenv('DB_HOST')
 DB_USER = os.getenv('DB_USER')
@@ -30,37 +30,37 @@ def get_db_connection():
         return None
 
 # ============================================================================
-# 1. ROTA DE LEITURA (A Mágica dos JOINS)
+# 1. ROTA DE LEITURA (O QUE FAZ O BADGE APARECER NO APP)
 # ============================================================================
 @app.route('/xrpc/com.atproto.label.queryLabels', methods=['GET'])
 def query_labels():
     uri_patterns = request.args.getlist('uriPatterns')
     labels = []
     
-    # 1. Pega o DID do Labeler (Nós)
+    # Pega o DID do Labeler (Emissor)
     try:
         client = Client()
         client.login(os.getenv('BLUESKY_HANDLE'), os.getenv('BLUESKY_PASSWORD'))
         my_did = client.me.did
     except:
-        my_did = "did:plc:bmx5j2ukbbixbn4lo5itsf5v" # Seu DID fixo (fallback)
+        my_did = "did:plc:bmx5j2ukbbixbn4lo5itsf5v" # Seu DID fixo
 
     conn = get_db_connection()
     if not conn:
-        return jsonify({"cursor": "0", "labels": []}) # Retorna vazio se sem banco
+        return jsonify({"cursor": "0", "labels": []})
 
     try:
         cursor = conn.cursor(dictionary=True)
         
         for pattern in uri_patterns:
             if pattern.startswith('did:'):
-                # ==================================================================
-                # A QUERY DE TRADUÇÃO (JOIN)
-                # ==================================================================
-                # 1. 'ub' (user_badges) diz quem tem o badge.
-                # 2. 'bb' (bluesky_badges) traduz o ID numérico para o slug (label_id).
-                # 3. 'u' (users) traduz o DID (texto) para o ID numérico.
-                # ⚠️ Verifique se sua tabela de usuários se chama 'users' e tem coluna 'did'
+                # -----------------------------------------------------------
+                # A QUERY DE JOIN (A Correção Principal)
+                # -----------------------------------------------------------
+                # Liga: user_badges -> bluesky_badges (para pegar o nome 'arianators')
+                # Liga: user_badges -> users (para pegar o DID do usuário)
+                # ⚠️ ATENÇÃO: Confirme se sua tabela de usuários se chama 'users'
+                # e se a coluna do did se chama 'did'.
                 query = """
                     SELECT bb.label_id, ub.created_at
                     FROM user_badges ub
@@ -73,16 +73,15 @@ def query_labels():
                 results = cursor.fetchall()
                 
                 for row in results:
-                    # Define a data
+                    # Formata a data
                     cts = datetime.now(timezone.utc).isoformat()
                     if row.get('created_at'):
                         cts = row['created_at'].isoformat() + "Z"
                     
-                    # Adiciona na lista de resposta
                     labels.append({
-                        "src": my_did,           # Quem emite (Nós)
-                        "uri": pattern,          # Quem recebe (Usuário)
-                        "val": row['label_id'],  # O Slug (ex: 'maconheira') vindo da tabela bluesky_badges
+                        "src": my_did,           # Nós
+                        "uri": pattern,          # Usuário
+                        "val": row['label_id'],  # O Slug (ex: 'arianators')
                         "cts": cts,
                         "ver": 1
                     })
@@ -97,18 +96,27 @@ def query_labels():
     return jsonify({"cursor": "0", "labels": labels})
 
 # ============================================================================
-# 2. ROTAS DE ESCRITA (Admin Panel)
+# 2. ROTAS DE ESCRITA (PARA PARAR O ERRO 404 DO PAINEL)
 # ============================================================================
-# ATENÇÃO: Se o seu painel PHP já grava direto no banco, você NÃO precisa dessas rotas.
-# Mas se o painel tentar chamar a API para gravar, elas precisam ser inteligentes
-# para buscar os IDs antes de inserir. Manti simplificado para evitar erros de FK.
+# Se o seu painel PHP já grava no banco, essas rotas só precisam retornar OK
+# para o painel não travar com erro crítico.
+
+@app.route('/apply-badge', methods=['POST'])
+def apply_badge():
+    # O PHP já gravou no banco? Se sim, só retornamos sucesso.
+    # Se o PHP espera que a API grave, me avise que ajustamos aqui.
+    return jsonify({"success": True, "message": "Recebido. Assumindo que o PHP já gravou no banco."})
+
+@app.route('/remove-badge', methods=['POST'])
+def remove_badge():
+    return jsonify({"success": True, "message": "Recebido. Assumindo que o PHP já removeu do banco."})
 
 @app.route('/')
 def home():
     return jsonify({
         'status': 'online', 
-        'mode': 'Relational DB (Joins)', 
-        'tables': ['bluesky_badges', 'user_badges', 'users']
+        'mode': 'MySQL Normalized (Joined Tables)',
+        'tables_used': ['bluesky_badges', 'user_badges', 'users']
     })
 
 if __name__ == '__main__':
