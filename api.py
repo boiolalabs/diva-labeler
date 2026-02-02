@@ -1,22 +1,33 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from atproto import Client
+from atproto import Client, models
 import os
 
 app = Flask(__name__)
 CORS(app)
 
-# Login no Bluesky
+# Cliente Bluesky (singleton)
 client = None
 
-def init_client():
+def get_client():
+    """Get authenticated Bluesky client"""
     global client
+    
     if client is None:
         client = Client()
-        client.login(
-            os.getenv('BLUESKY_HANDLE'),
-            os.getenv('BLUESKY_PASSWORD')
-        )
+        handle = os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
+        password = os.getenv('BLUESKY_PASSWORD')
+        
+        if not password:
+            raise ValueError('BLUESKY_PASSWORD not set')
+        
+        try:
+            client.login(handle, password)
+            print(f"✅ Logged in as {handle}")
+        except Exception as e:
+            print(f"❌ Login failed: {e}")
+            raise
+    
     return client
 
 @app.route('/')
@@ -33,44 +44,84 @@ def health():
 
 @app.route('/apply-badge', methods=['POST'])
 def apply_badge():
+    """
+    Aplicar badge em um usuário
+    Body: {
+        "did": "did:plc:abc123xyz",
+        "label": "arianators"
+    }
+    """
     try:
         data = request.json
         user_did = data.get('did')
         label_value = data.get('label')
         
+        # Validar parâmetros
         if not user_did or not label_value:
             return jsonify({
                 'success': False,
                 'error': 'Missing parameters: did and label required'
             }), 400
         
-        # Inicializar cliente
-        c = init_client()
+        # Validar formato do DID
+        if not user_did.startswith('did:'):
+            return jsonify({
+                'success': False,
+                'error': 'Invalid DID format. Must start with "did:"'
+            }), 400
         
-        # Aplicar label
-        c.com.atproto.label.create_labels(
-            repo=c.me.did,
-            labels=[{
-                'uri': f'at://{user_did}/app.bsky.actor.profile/self',
-                'val': label_value,
-                'neg': False,
-                'cts': c._get_current_time_iso()
-            }]
+        # Get authenticated client
+        c = get_client()
+        
+        # Construir URI do perfil do usuário
+        profile_uri = f'at://{user_did}/app.bsky.actor.profile/self'
+        
+        # ✅ MÉTODO CORRETO (atproto 0.0.65+)
+        c.app.bsky.labeler.apply_labels(
+            labels=[
+                models.ComAtprotoLabelDefs.Label(
+                    src=c.me.did,
+                    uri=profile_uri,
+                    val=label_value,
+                    neg=False,
+                    cts=c._get_current_time_iso()
+                )
+            ]
         )
         
         return jsonify({
             'success': True,
-            'message': f'Badge {label_value} aplicado com sucesso'
+            'message': f'Badge "{label_value}" aplicado com sucesso',
+            'user_did': user_did,
+            'label': label_value
         })
         
-    except Exception as e:
+    except ValueError as e:
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': f'Configuration error: {str(e)}'
+        }), 500
+        
+    except Exception as e:
+        print(f"❌ Error applying badge: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'details': {
+                'error_type': type(e).__name__,
+                'message': str(e)
+            }
         }), 500
 
 @app.route('/remove-badge', methods=['POST'])
 def remove_badge():
+    """
+    Remover badge de um usuário
+    Body: {
+        "did": "did:plc:abc123xyz",
+        "label": "arianators"
+    }
+    """
     try:
         data = request.json
         user_did = data.get('did')
@@ -82,17 +133,21 @@ def remove_badge():
                 'error': 'Missing parameters'
             }), 400
         
-        c = init_client()
+        c = get_client()
         
-        # Remover label (negar)
-        c.com.atproto.label.create_labels(
-            repo=c.me.did,
-            labels=[{
-                'uri': f'at://{user_did}/app.bsky.actor.profile/self',
-                'val': label_value,
-                'neg': True,
-                'cts': c._get_current_time_iso()
-            }]
+        profile_uri = f'at://{user_did}/app.bsky.actor.profile/self'
+        
+        # Remover label (neg=True)
+        c.app.bsky.labeler.apply_labels(
+            labels=[
+                models.ComAtprotoLabelDefs.Label(
+                    src=c.me.did,
+                    uri=profile_uri,
+                    val=label_value,
+                    neg=True,
+                    cts=c._get_current_time_iso()
+                )
+            ]
         )
         
         return jsonify({
@@ -101,6 +156,7 @@ def remove_badge():
         })
         
     except Exception as e:
+        print(f"❌ Error removing badge: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
