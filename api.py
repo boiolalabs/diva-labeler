@@ -27,19 +27,68 @@ def get_client():
             client.login(handle, password)
             print(f"✅ Logged in as {handle}")
             print(f"   DID: {client.me.did}")
-            print(f"   Access JWT: {client.me.access_jwt[:20]}...")
+            
+            # Testar acesso ao JWT
+            jwt = get_jwt_token(client)
+            if jwt:
+                print(f"   JWT: {jwt[:20]}...")
+            else:
+                print("   ⚠️  JWT not found!")
+                
         except Exception as e:
             print(f"❌ Login failed: {e}")
             raise
     
     return client
 
+def get_jwt_token(client):
+    """
+    Obter JWT token do client de forma segura
+    Tenta múltiplos locais onde o JWT pode estar
+    """
+    # Tentar diferentes locais onde o JWT pode estar
+    
+    # Opção 1: session (mais comum)
+    if hasattr(client, 'session') and client.session:
+        if isinstance(client.session, dict):
+            return client.session.get('accessJwt') or client.session.get('access_jwt')
+        elif hasattr(client.session, 'access_jwt'):
+            return client.session.access_jwt
+        elif hasattr(client.session, 'accessJwt'):
+            return client.session.accessJwt
+    
+    # Opção 2: atributo direto
+    if hasattr(client, 'access_jwt'):
+        return client.access_jwt
+    
+    if hasattr(client, '_access_jwt'):
+        return client._access_jwt
+    
+    # Opção 3: dentro de _session
+    if hasattr(client, '_session') and client._session:
+        if isinstance(client._session, dict):
+            return client._session.get('accessJwt') or client._session.get('access_jwt')
+    
+    # Opção 4: método de autenticação
+    if hasattr(client, 'auth') and hasattr(client.auth, 'jwt'):
+        return client.auth.jwt
+    
+    print("⚠️  Could not find JWT token in client object")
+    print(f"   Available attributes: {dir(client)}")
+    
+    return None
+
 def create_label_via_http(subject_did, label_value, negate=False):
     """
     Criar label usando API HTTP direta do AT Protocol
-    Não depende dos métodos Python instáveis
     """
     c = get_client()
+    
+    # Obter JWT
+    jwt = get_jwt_token(c)
+    
+    if not jwt:
+        raise ValueError("Could not obtain JWT token from client")
     
     # Endpoint para criar labels
     endpoint = "https://bsky.social/xrpc/com.atproto.repo.createRecord"
@@ -66,29 +115,40 @@ def create_label_via_http(subject_did, label_value, negate=False):
     
     # Headers com autenticação
     headers = {
-        'Authorization': f'Bearer {c.me.access_jwt}',
+        'Authorization': f'Bearer {jwt}',
         'Content-Type': 'application/json'
     }
     
     print(f"📤 HTTP Request to: {endpoint}")
-    print(f"   Body: {body}")
+    print(f"   Repo: {c.me.did}")
+    print(f"   Subject: {subject_did}")
+    print(f"   Label: {label_value}")
+    print(f"   Negate: {negate}")
     
     # Fazer request
-    response = requests.post(endpoint, json=body, headers=headers)
-    
-    print(f"📥 HTTP Response: {response.status_code}")
-    print(f"   Body: {response.text}")
-    
-    if response.status_code in [200, 201]:
-        return {
-            'success': True,
-            'data': response.json()
-        }
-    else:
+    try:
+        response = requests.post(endpoint, json=body, headers=headers, timeout=10)
+        
+        print(f"📥 HTTP Response: {response.status_code}")
+        
+        if response.status_code in [200, 201]:
+            print(f"   ✅ Success!")
+            return {
+                'success': True,
+                'data': response.json()
+            }
+        else:
+            print(f"   ❌ Error: {response.text}")
+            return {
+                'success': False,
+                'error': response.text,
+                'status_code': response.status_code
+            }
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Request failed: {e}")
         return {
             'success': False,
-            'error': response.text,
-            'status_code': response.status_code
+            'error': str(e)
         }
 
 @app.route('/')
@@ -96,8 +156,8 @@ def home():
     return jsonify({
         'status': 'healthy',
         'service': 'Diva Labeler',
-        'version': '3.0.0',
-        'method': 'HTTP Direct API',
+        'version': '3.1.0',
+        'method': 'HTTP Direct API with JWT Fix',
         'labeler': os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
     })
 
@@ -135,13 +195,17 @@ def apply_badge():
                 'received_did': user_did
             }), 400
         
-        print(f"📝 Applying badge '{label_value}' to {user_did}")
+        print(f"\n{'='*60}")
+        print(f"📝 APPLYING BADGE")
+        print(f"   User: {user_did}")
+        print(f"   Badge: {label_value}")
+        print(f"{'='*60}\n")
         
         # Aplicar label via HTTP
         result = create_label_via_http(user_did, label_value, negate=False)
         
         if result['success']:
-            print(f"✅ Badge applied successfully!")
+            print(f"\n✅ SUCCESS: Badge applied!\n")
             return jsonify({
                 'success': True,
                 'message': f'Badge "{label_value}" aplicado com sucesso',
@@ -150,7 +214,7 @@ def apply_badge():
                 'data': result.get('data')
             })
         else:
-            print(f"❌ Failed to apply badge: {result['error']}")
+            print(f"\n❌ FAILED: {result.get('error')}\n")
             return jsonify({
                 'success': False,
                 'error': f'Failed to apply badge: {result["error"]}',
@@ -158,7 +222,7 @@ def apply_badge():
             }), 500
         
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"\n❌ EXCEPTION: {e}\n")
         return jsonify({
             'success': False,
             'error': str(e),
@@ -185,26 +249,30 @@ def remove_badge():
                 'error': 'Missing parameters'
             }), 400
         
-        print(f"🗑️ Removing badge '{label_value}' from {user_did}")
+        print(f"\n{'='*60}")
+        print(f"🗑️  REMOVING BADGE")
+        print(f"   User: {user_did}")
+        print(f"   Badge: {label_value}")
+        print(f"{'='*60}\n")
         
         # Remover label via HTTP (negate=True)
         result = create_label_via_http(user_did, label_value, negate=True)
         
         if result['success']:
-            print(f"✅ Badge removed successfully!")
+            print(f"\n✅ SUCCESS: Badge removed!\n")
             return jsonify({
                 'success': True,
                 'message': 'Badge removido com sucesso'
             })
         else:
-            print(f"❌ Failed to remove badge: {result['error']}")
+            print(f"\n❌ FAILED: {result.get('error')}\n")
             return jsonify({
                 'success': False,
                 'error': f'Failed to remove badge: {result["error"]}'
             }), 500
         
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"\n❌ EXCEPTION: {e}\n")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -215,13 +283,16 @@ def test_connection():
     """Testar conexão com Bluesky"""
     try:
         c = get_client()
+        jwt = get_jwt_token(c)
+        
         return jsonify({
             'success': True,
             'message': 'Connected to Bluesky',
             'labeler': {
                 'did': c.me.did,
                 'handle': c.me.handle,
-                'has_jwt': bool(c.me.access_jwt)
+                'has_jwt': bool(jwt),
+                'jwt_preview': jwt[:20] if jwt else None
             }
         })
     except Exception as e:
@@ -232,6 +303,9 @@ def test_connection():
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
-    print(f"🚀 Starting Diva Labeler v3.0.0 on port {port}")
-    print(f"   Method: HTTP Direct API")
+    print(f"\n{'='*60}")
+    print(f"🚀 DIVA LABELER v3.1.0")
+    print(f"   Port: {port}")
+    print(f"   Method: HTTP Direct API with JWT Fix")
+    print(f"{'='*60}\n")
     app.run(host='0.0.0.0', port=port)
