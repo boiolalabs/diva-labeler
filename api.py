@@ -1,17 +1,21 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from atproto import Client
+from atproto import Client, models
 import os
 from datetime import datetime, timezone
 
 app = Flask(__name__)
 CORS(app)
 
+# ============================================================================
+# CONFIGURAÇÃO E CLIENTE BLUESKY
+# ============================================================================
+
 # Cliente Bluesky (singleton)
 client = None
 
 def get_client():
-    """Get authenticated Bluesky client"""
+    """Retorna o cliente Bluesky autenticado, fazendo login se necessário."""
     global client
     
     if client is None:
@@ -20,6 +24,7 @@ def get_client():
         password = os.getenv('BLUESKY_PASSWORD')
         
         if not password:
+            print("❌ ERRO: A variável de ambiente BLUESKY_PASSWORD não está definida.")
             raise ValueError('BLUESKY_PASSWORD not set')
         
         try:
@@ -35,82 +40,72 @@ def get_client():
     
     return client
 
-def emit_ozone_event(user_did, badge_name, negate=False):
+# ============================================================================
+# LÓGICA DE APLICAÇÃO DE LABELS (REPO WRITER)
+# ============================================================================
+
+def apply_label_via_repo(subject_did, badge_name, negate=False):
     """
-    Função de alto nível para emitir eventos de moderação VIA OZONE (atproto 0.0.65+)
+    Cria ou remove um label gravando DIRETAMENTE no Repositório do Labeler.
+    (Self-Labeling / Repo Labeler)
     
-    FIX 401 (v3.7.0):
-    - Adicionado header 'atproto-proxy' para indicar que o evento é para o
-      nosso Serviço de Labeler, e não para o servidor global (PDS).
+    Collection: com.atproto.label.defs
     """
     c = get_client()
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     
-    # 1. Definir o que será criado e o que será negado
-    create_vals = []
-    negate_vals = []
+    action_name = "REMOVING (Negate)" if negate else "ADDING"
     
-    if negate:
-        negate_vals = [badge_name]
-        action_name = "REMOVING (NEGATE)"
-    else:
-        create_vals = [badge_name]
-        action_name = "ADDING (CREATE)"
+    # CORREÇÃO FEITA: Agora usa a variável correta 'subject_did' no print
+    print(f"🔄 {action_name} BADGE '{badge_name}' PARA {subject_did}")
 
-    print(f"🔄 {action_name} BADGE '{badge_name}' PARA {user_did}")
-    
-    # 2. Montar o payload do evento (Tipagem Ozone)
-    event_data = {
-        "event": {
-            "$type": "tools.ozone.moderation.defs#modEventLabel",
-            "createLabelVals": create_vals,
-            "negateLabelVals": negate_vals,
-            "comment": "Changed via Diva Labeler API"
-        },
-        "subject": {
-            "$type": "com.atproto.admin.defs#repoRef",
-            "did": user_did
-        },
-        "createdBy": c.me.did,
-        "createdAt": now
-    }
-    
-    # 3. HEADER MÁGICO DO PROXY
-    # "Ei PDS, mande isso para o meu serviço de labeler, não tente processar você mesmo"
-    proxy_header = {
-        'atproto-proxy': f'{c.me.did}#atproto_labeler'
+    # 1. Criar o objeto Label usando o Modelo Oficial
+    label_record = models.ComAtprotoLabelDefsLabel(
+        src=c.me.did,      # Quem está dando o label (nós)
+        uri=subject_did,   # Quem está recebendo (o usuário)
+        val=badge_name,    # O nome do badge (ex: 'maconheira')
+        neg=negate,        # Se é true, anula um label anterior
+        cts=now            # Timestamp
+    )
+
+    # 2. Montar o payload para o create_record
+    data_payload = {
+        "repo": c.me.did,
+        "collection": "com.atproto.label.defs",
+        "record": label_record
     }
 
     try:
-        print(f"📤 Sending OZONE event with Proxy Header...")
-        print(f"   Proxy: {proxy_header['atproto-proxy']}")
+        print(f"📤 Gravando registro no Repo do Labeler...")
         
-        # Enviar evento com headers
-        response = c.tools.ozone.moderation.emit_event(
-            data=event_data,
-            headers=proxy_header
-        )
+        # 3. Enviar gravação
+        response = c.com.atproto.repo.create_record(data=data_payload)
         
-        print(f"✅ Success: {response}")
+        print(f"✅ Sucesso! URI do registro: {response.uri}")
         return {
             "success": True,
             "data": str(response)
         }
         
     except Exception as e:
-        print(f"❌ Error in emit_event: {e}")
+        print(f"❌ Erro ao gravar no repo: {e}")
         return {
             "success": False,
             "error": str(e)
         }
+
+# ============================================================================
+# ROTAS DA API (FLASK)
+# ============================================================================
 
 @app.route('/')
 def home():
     return jsonify({
         'status': 'healthy',
         'service': 'Diva Labeler',
-        'version': '3.7.0',
-        'method': 'Ozone Proxy (Header Fixed)',
+        'version': '3.6.1',
+        'method': 'Repo Writer (Direct Record)',
+        'note': 'Writes to com.atproto.label.defs collection',
         'labeler': os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
     })
 
@@ -122,28 +117,25 @@ def health():
 def apply_badge():
     try:
         data = request.json
+        if not data:
+             return jsonify({'success': False, 'error': 'No JSON body provided'}), 400
+
         user_did = data.get('did')
         label_value = data.get('label')
         
         if not user_did or not label_value:
-            return jsonify({'success': False, 'error': 'Missing parameters'}), 400
+            return jsonify({'success': False, 'error': 'Missing parameters (did, label)'}), 400
         
         if not user_did.startswith('did:'):
             return jsonify({'success': False, 'error': 'Invalid DID format'}), 400
             
-        print(f"\n{'='*60}\n📝 APPLYING BADGE\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
+        print(f"\n{'='*60}\n📝 REQUEST: APPLY BADGE\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
         
         # negate=False -> ADICIONAR
-        result = emit_ozone_event(user_did, label_value, negate=False)
+        result = apply_label_via_repo(user_did, label_value, negate=False)
         
-        if result['success']:
-            return jsonify({
-                'success': True,
-                'message': f'Badge "{label_value}" aplicado com sucesso',
-                'data': result.get('data')
-            })
-        else:
-            return jsonify({'success': False, 'error': result['error']}), 500
+        status_code = 200 if result['success'] else 500
+        return jsonify(result), status_code
         
     except Exception as e:
         print(f"❌ EXCEPTION: {e}")
@@ -153,21 +145,22 @@ def apply_badge():
 def remove_badge():
     try:
         data = request.json
+        if not data:
+             return jsonify({'success': False, 'error': 'No JSON body provided'}), 400
+
         user_did = data.get('did')
         label_value = data.get('label')
         
         if not user_did or not label_value:
-            return jsonify({'success': False, 'error': 'Missing parameters'}), 400
+            return jsonify({'success': False, 'error': 'Missing parameters (did, label)'}), 400
             
-        print(f"\n{'='*60}\n🗑️  REMOVING BADGE\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
+        print(f"\n{'='*60}\n🗑️  REQUEST: REMOVE BADGE\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
         
         # negate=True -> REMOVER
-        result = emit_ozone_event(user_did, label_value, negate=True)
+        result = apply_label_via_repo(user_did, label_value, negate=True)
         
-        if result['success']:
-            return jsonify({'success': True, 'message': 'Badge removido com sucesso'})
-        else:
-            return jsonify({'success': False, 'error': result['error']}), 500
+        status_code = 200 if result['success'] else 500
+        return jsonify(result), status_code
         
     except Exception as e:
         print(f"❌ EXCEPTION: {e}")
@@ -191,8 +184,8 @@ def test_connection():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     print(f"\n{'='*60}")
-    print(f"🚀 DIVA LABELER v3.7.0")
+    print(f"🚀 DIVA LABELER v3.6.1")
     print(f"   Port: {port}")
-    print(f"   Method: Ozone Proxy")
+    print(f"   Method: Repo Writer (Simple)")
     print(f"{'='*60}\n")
     app.run(host='0.0.0.0', port=port)
