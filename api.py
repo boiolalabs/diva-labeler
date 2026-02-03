@@ -75,13 +75,21 @@ def apply_label_via_repo(subject_did, badge_name, negate=False):
     )
 
     # 2. Montar o payload para o create_record
-    # Fix: Converter o modelo Pydantic para dicionário e remover campos nulos/extras desnecessários
+    # Fix: Converter o modelo Pydantic para dicionário usando ALIASES (ver, cts, val) e removendo Nulos
     # O SDK espera um dict no campo 'record'
+    record_dict = label_record.model_dump(by_alias=True, exclude_none=True)
+    
+    # Garantir que 'ver' (versão) esteja presente se for exigido (Label Defs v1)
+    if 'ver' not in record_dict: # Opcional, mas bom forçar para v1
+        record_dict['ver'] = 1
+
     data_payload = {
         "repo": c.me.did,
         "collection": "com.atproto.label.defs",
-        "record": label_record.model_dump()
+        "record": record_dict
     }
+
+    print(f"📦 JSON Record Payload: {json.dumps(record_dict)}")
 
     try:
         print(f"📤 Sending create_record to Self Repo...")
@@ -291,6 +299,56 @@ def debug_page():
         html_output += f"<div>Error: {str(e)}</div>"
         html_output += "<!-- BSKY_STATUS: FAILED -->"
     html_output += "</div>"
+    
+    # 1.7 Inspeção do DID Document (Services)
+    html_output += "<h2>1.7 Configuração de Rede (DID Document)</h2><div class='card'>"
+    try:
+        c = get_client()
+        if c.me.did:
+             # Resolver o DID Document publicamente
+             # Usando o diretório PLC ou via client
+             did_doc_url = f"https://plc.directory/{c.me.did}"
+             html_output += f"<div><strong>DID:</strong> {c.me.did}</div>"
+             html_output += f"<div style='margin-bottom:10px;'><a href='{did_doc_url}' target='_blank' style='color:#60a5fa'>Ver no PLC Directory ↗</a></div>"
+             
+             # Tentar fetch manual do JSON
+             import requests
+             res = requests.get(did_doc_url)
+             if res.status_code == 200:
+                 doc = res.json()
+                 services = doc.get('service', [])
+                 
+                 found_labeler = False
+                 html_output += "<table style='width:100%; font-size:0.9em; border-collapse:collapse;'>"
+                 html_output += "<tr style='border-bottom:1px solid #334155; text-align:left;'><th>ID</th><th>Type</th><th>Endpoint</th></tr>"
+                 
+                 for s in services:
+                     sid = s.get('id', '')
+                     stype = s.get('type', '')
+                     spt = s.get('serviceEndpoint', '')
+                     
+                     is_labeler = 'atproto_labeler' in sid or 'atproto_labeler' in stype
+                     style = "color:#4ade80; font-weight:bold;" if is_labeler else ""
+                     
+                     if is_labeler: found_labeler = True
+                     
+                     html_output += f"<tr style='border-bottom:1px solid #334155;'>"
+                     html_output += f"<td style='padding:5px; {style}'>{sid}</td>"
+                     html_output += f"<td style='padding:5px;'>{stype}</td>"
+                     html_output += f"<td style='padding:5px;'>{spt}</td>"
+                     html_output += "</tr>"
+                 html_output += "</table>"
+                 
+                 if found_labeler:
+                      html_output += "<div style='margin-top:10px; color:#4ade80'>✅ Serviço de Labeler declarado.</div>"
+                 else:
+                      html_output += "<div style='margin-top:10px; color:#f87171'>❌ NENHUM serviço de Labeler (atproto_labeler) encontrado! O mundo não sabe que você é um labeler.</div>"
+             else:
+                 html_output += "<div>❌ Falha ao buscar DID Doc no PLC.</div>"
+    except Exception as e:
+        html_output += f"<div>Erro ao inspecionar DID Doc: {str(e)}</div>"
+    html_output += "</div>"
+
     html_output += "<h2>2. Conexão MySQL</h2><div class='card'>"
     conn = None
     try:
