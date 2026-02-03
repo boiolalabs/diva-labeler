@@ -604,7 +604,9 @@ def debug_page():
                             COALESCE(bb.badge_name, '?? BADGE DELETADO ??'), 
                             ' (ID: ', 
                             ub.badge_id, 
-                            ')'
+                            ') <span style="font-size:0.8em; color:#666">[RKey: ', 
+                            COALESCE(ub.rkey, '-'), 
+                            ']</span>'
                         ) SEPARATOR '<br>'
                     ) as badges_list
                 FROM user_bluesky_profiles ubp
