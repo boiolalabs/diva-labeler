@@ -97,10 +97,34 @@ def apply_label_via_repo(subject_did, badge_name, negate=False):
         # 3. Enviar
         response = c.com.atproto.repo.create_record(data=data_payload)
         
-        print(f"✅ Success: {response}")
+        # Parse Response
+        new_uri = getattr(response, 'uri', '')
+        new_cid = getattr(response, 'cid', '')
+        rkey = new_uri.split('/')[-1] if new_uri else 'unknown'
+        
+        print(f"✅ Success! URI: {new_uri} | CID: {new_cid}")
+
+        # --- SIMULACAO JETSTREAM (O que a rede verá) ---
+        js_event = {
+            "did": c.me.did,
+            "kind": "commit",
+            "commit": {
+                "operation": "create",
+                "collection": "com.atproto.label.defs",
+                "rkey": rkey,
+                "record": record_dict, # Strict JSON we built earlier
+                "cid": new_cid
+            }
+        }
+        print(f"🌊 Jetstream Event Simulation:\n{json.dumps(js_event, indent=2)}")
+        # ---------------------------------------------
+
         return {
             "success": True,
-            "data": str(response)
+            "uri": new_uri,
+            "cid": new_cid,
+            "rkey": rkey,
+            "jetstream_simulation": js_event
         }
         
     except Exception as e:
@@ -638,7 +662,7 @@ def debug_page():
             
             sim_cursor = conn.cursor(dictionary=True)
             sim_query = """
-                SELECT ubp.bluesky_did, bb.label_id, bb.badge_name
+                SELECT ubp.bluesky_did, bb.label_id, bb.badge_name, ub.rkey, ub.cid
                 FROM user_badges ub
                 JOIN bluesky_badges bb ON bb.id = ub.badge_id
                 JOIN user_bluesky_profiles ubp ON ubp.user_id = ub.user_id
@@ -650,14 +674,18 @@ def debug_page():
             
             for b in all_badges:
                 if b['bluesky_did'] and b['label_id']:
-                    all_simulated_labels.append({
+                    # Strict Label Def (Without _comment inside the object to be valid)
+                    label_obj = {
                         "src": labeler_did,
                         "uri": b['bluesky_did'],
                         "val": b['label_id'],
                         "cts": current_time,
-                        "ver": 1,
-                        "_comment": f"Badge: {b['badge_name']}"
-                    })
+                        "ver": 1
+                    }
+                    if b.get('cid'):
+                         label_obj['cid'] = b['cid'] # Simulation: we know the CID
+                    
+                    all_simulated_labels.append(label_obj)
             sim_cursor.close()
             conn.close()
         except Exception as e:
