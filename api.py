@@ -208,6 +208,8 @@ def debug_page():
     <body>
         <h1>🔍 Diva Labeler Diagnostic Tool</h1>
     """
+    today = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    html_output += f"<div style='color: #64748b; margin-top:-15px; margin-bottom:20px;'>Last Render Start: {today} | v3.6.2 (Simulação Global)</div>"
     # 0. DASHBOARD DE STATUS (Conectividade)
     html_output += "<div style='background: #1e293b; border: 1px solid #334155; padding: 20px; margin-bottom: 20px; border-radius: 8px; text-align:center;'>"
     html_output += "<h3 style='margin-top:0; color: #cbd5e1;'>📡 Connectivity Status</h3>"
@@ -386,6 +388,64 @@ def debug_page():
         html_output += f"<div>Erro Definition Check: {str(e)}</div>"
     html_output += "</div>"
 
+    # 2.7 Definições de Serviço (Rede Bluesky)
+    html_output += f"<h2>2.7 Definições de Serviço (Rede Bluesky)</h2><div class='card' style='background: #f0fdf4; border-color: #4ade80; color: #166534;'>"
+    html_output += "<p>O que o mundo vê no seu <code>app.bsky.labeler.service</code> (rkey: self):</p>"
+    
+    try:
+        c = get_client()
+        # Fetch record 'self' da coleção app.bsky.labeler.service
+        try:
+            # Tentar importar de models se precisar, mas o response vem como objeto
+            record_response = c.com.atproto.repo.get_record(
+                repo=c.me.did,
+                collection='app.bsky.labeler.service',
+                rkey='self'
+            )
+            
+            # O 'value' contém o record real
+            record_data = record_response.value
+            
+            # Verificar policies
+            policies = getattr(record_data, 'policies', None)
+            
+            if policies:
+                # O SDK retorna objetos, precisamos navegar
+                lbl_defs = getattr(policies, 'label_value_definitions', [])
+                lbl_vals = getattr(policies, 'label_values', [])
+                
+                html_output += f"<div>✅ <strong>Registro Encontrado!</strong></div>"
+                html_output += f"<div>Definições (Definitions): <strong>{len(lbl_defs)}</strong></div>"
+                html_output += f"<div>Valores Listados (Values): <strong>{len(lbl_vals)}</strong></div>"
+                html_output += f"<div>Criado em: {getattr(record_data, 'created_at', '?')}</div>"
+                
+                # Listar primeiros 5 para conferência
+                if lbl_defs:
+                    html_output += "<div style='margin-top:10px; padding:10px; background:white; border-radius:4px; max-height:200px; overflow-y:auto; font-size:0.9em;'>"
+                    html_output += "<strong>Amostra de Definições:</strong><br>"
+                    for i, ld in enumerate(lbl_defs):
+                        ident = getattr(ld, 'identifier', '?')
+                        locales = getattr(ld, 'locales', [])
+                        name = "?"
+                        if locales and len(locales) > 0:
+                            name = getattr(locales[0], 'name', '?')
+                            
+                        html_output += f"<code>{ident}</code> ({name})"
+                        if i < len(lbl_defs) - 1: html_output += ", "
+                    html_output += "</div>"
+            else:
+                 html_output += "<div>⚠️ Record existe mas 'policies' está vazio ou inválido.</div>"
+                 html_output += f"<pre>{str(record_data)}</pre>"
+
+        except Exception as  e_rec:
+             html_output += f"<div>⚠️ Não foi possível ler o record 'self': {str(e_rec)}</div>"
+             html_output += "<div>Provavelmente o setup inicial (setup_labeler.py) ainda não foi rodado ou o login falhou.</div>"
+
+    except Exception as e:
+        html_output += f"<div>Erro ao conectar para checar definições: {str(e)}</div>"
+    
+    html_output += "</div>"
+
     # 3. Teste de Integridade de Dados (Query Real)
     html_output += f"<h2>3. Integridade de Dados (DID: {TARGET_DID})</h2><div class='card'>"
     
@@ -496,11 +556,12 @@ def debug_page():
     
     html_output += "</div>"
 
-    # 4. Simulação output JSON (QueryLabels)
-    html_output += "<h2>4. Simulação JSON Output</h2><div class='card'>"
-    html_output += f"<div>Para QueryLabels(uri={TARGET_DID})</div>"
+    # 4. Simulação Output JSON (ALL LABELS)
+    html_output += "<h2>4. Simulação JSON Output (Todos os Usuários)</h2><div class='card'>"
+    html_output += "<div><strong>Simulando resposta para TODOS os Badges ativos no sistema.</strong></div>"
+    html_output += "<div style='margin-bottom:10px; color:#94a3b8; font-size:0.9em;'>Isto simula o que o Bluesky veria se pedisse 'tudo' (teoricamente) ou se consultasse cada DID individualmente.</div>"
     
-    simulated_labels = []
+    all_simulated_labels = []
     current_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     
     labeler_did = "did:plc:placeholder_labeler_did"
@@ -510,26 +571,52 @@ def debug_page():
     except:
         pass
 
-    for label_val in badges_found:
-        simulated_labels.append({
-            "src": labeler_did,
-            "uri": TARGET_DID,
-            "cid": "bafyre...",
-            "val": label_val,
-            "cts": current_time
-        })
+    # Conexão para pegar TODOS os badges
+    if conn:
+        try:
+            # Re-usar a conexão ou abrir nova se fechou (no bloco anterior fechou)
+            if not conn.is_connected():
+                conn = get_db_connection()
+            
+            sim_cursor = conn.cursor(dictionary=True)
+            sim_query = """
+                SELECT ubp.bluesky_did, bb.label_id, bb.badge_name
+                FROM user_badges ub
+                JOIN bluesky_badges bb ON bb.id = ub.badge_id
+                JOIN user_bluesky_profiles ubp ON ubp.user_id = ub.user_id
+                ORDER BY ub.id DESC
+                LIMIT 100
+            """
+            sim_cursor.execute(sim_query)
+            all_badges = sim_cursor.fetchall()
+            
+            for b in all_badges:
+                if b['bluesky_did'] and b['label_id']:
+                    all_simulated_labels.append({
+                        "src": labeler_did,
+                        "uri": b['bluesky_did'],
+                        "val": b['label_id'],
+                        "cts": current_time,
+                        "ver": 1,
+                        "_comment": f"Badge: {b['badge_name']}"
+                    })
+            sim_cursor.close()
+            conn.close()
+        except Exception as e:
+            html_output += f"<div class='status-err'>Erro ao buscar todos badges: {str(e)}</div>"
+
     
     json_output = {
         "cursor": "0",
-        "labels": simulated_labels
+        "labels": all_simulated_labels
     }
     
-    html_output += f"<pre>{json.dumps(json_output, indent=2)}</pre>"
+    html_output += f"<pre style='max-height:500px; overflow-y:scroll;'>{json.dumps(json_output, indent=2)}</pre>"
     
-    if not badges_found:
-        html_output += "<div class='status-err'>⚠️ ALERTA: A lista 'labels' está vazia! O usuário não verá labels.</div>"
+    if not all_simulated_labels:
+        html_output += "<div class='status-err'>⚠️ ALERTA: Nenhum badge encontrado no sistema todo!</div>"
     else:
-        html_output += "<div class='status-ok'>✅ Tudo certo! JSON contém labels.</div>"
+        html_output += f"<div class='status-ok'>✅ Total de Labels gerados: {len(all_simulated_labels)}</div>"
         
     html_output += "</div></body></html>"
     
