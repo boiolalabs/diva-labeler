@@ -350,6 +350,42 @@ def debug_page():
         
     html_output += "</div>"
 
+    # 2.6 Inspeção de Definição de Badges (IDs 8 e 13)
+    html_output += f"<h2>2.6 Definição de Badges (Tabela bluesky_badges)</h2><div class='card' style='background: #e0e7ff; border-color: #6366f1;'>"
+    try:
+        def_conn = get_db_connection()
+        if def_conn:
+            def_cursor = def_conn.cursor(dictionary=True)
+            def_cursor.execute("SELECT id, badge_name, label_id, created_at FROM bluesky_badges WHERE id IN (8, 13)")
+            def_rows = def_cursor.fetchall()
+            
+            if def_rows:
+                html_output += "<table style='width:100%; border-collapse: collapse; font-size: 0.9em; color:black; background:white;'>"
+                html_output += "<tr style='background: #c7d2fe;'><th>ID</th><th>Name</th><th>Label ID (val)</th><th>Created</th></tr>"
+                for r in def_rows:
+                    html_output += "<tr style='border-bottom:1px solid #ddd;'>"
+                    html_output += f"<td style='padding:4px;'>{r['id']}</td>"
+                    html_output += f"<td style='padding:4px;'>{r['badge_name']}</td>"
+                    
+                    lbl_val = r['label_id']
+                    if not lbl_val:
+                        lbl_val = "<span style='color:red; font-weight:bold;'>MISSING/NULL</span>"
+                    else:
+                        lbl_val = f"<code>{lbl_val}</code>"
+                        
+                    html_output += f"<td style='padding:4px;'>{lbl_val}</td>"
+                    html_output += f"<td style='padding:4px;'>{r['created_at']}</td>"
+                    html_output += "</tr>"
+                html_output += "</table>"
+            else:
+                html_output += "<p>Nenhum badge encontrado com IDs 8 ou 13.</p>"
+            
+            def_cursor.close()
+            def_conn.close()
+    except Exception as e:
+        html_output += f"<div>Erro Definition Check: {str(e)}</div>"
+    html_output += "</div>"
+
     # 3. Teste de Integridade de Dados (Query Real)
     html_output += f"<h2>3. Integridade de Dados (DID: {TARGET_DID})</h2><div class='card'>"
     
