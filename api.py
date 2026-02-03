@@ -221,16 +221,26 @@ def debug_page():
     html_output += "</div>"
 
     # 1.5 Identidade Autenticada
-    html_output += "<h2>1.5 Identidade Autenticada (Client)</h2><div class='card'>"
+    html_output += "<h2>1.5 Checagem de Conexão (Triangulação)</h2><div class='card'>"
     try:
         c = get_client()
-        html_output += f"<div>Handle: <span class='status-ok'>{c.me.handle}</span></div>"
-        html_output += f"<div>DID: <span class='status-ok'>{c.me.did}</span></div>"
+        # Teste REAL de conexão (fetch profile)
+        start_ping = time.time()
+        profile = c.get_profile(actor=c.me.did)
+        ping_ms = (time.time() - start_ping) * 1000
+        
+        html_output += f"<div>Status: <span class='status-ok'>CONNECTED</span> (Ping: {ping_ms:.0f}ms)</div>"
+        html_output += f"<div>Handle: <strong>{c.me.handle}</strong></div>"
+        html_output += f"<div>DID: <code>{c.me.did}</code></div>"
+        
+        # MARCADOR PARA O DEBUG-TOOL.PHP LER
+        html_output += "<!-- BSKY_STATUS: CONNECTED -->"
+        
     except Exception as e:
-        html_output += f"<div>Status: <span class='status-err'>Not Authenticated</span> ({str(e)})</div>"
+        html_output += f"<div>Status: <span class='status-err'>FAILED TO CONNECT</span></div>"
+        html_output += f"<div>Error: {str(e)}</div>"
+        html_output += "<!-- BSKY_STATUS: FAILED -->"
     html_output += "</div>"
-    
-    # 2. Teste de Conexão MySQL
     html_output += "<h2>2. Conexão MySQL</h2><div class='card'>"
     conn = None
     try:
@@ -243,6 +253,53 @@ def debug_page():
     except Exception as e:
         html_output += f"<div>Status: <span class='status-err'>FAILED</span></div>"
         html_output += f"<div>Error: {str(e)}</div>"
+    html_output += "</div>"
+
+    # 2.5 Inspeção Bruta (Visão do Python)
+    html_output += f"<h2>2.5 Inspeção Bruta (user_badges)</h2><div class='card' style='background: #fffbeb; border-color: #fcd34d;'>"
+    html_output += f"<p style='color:#b45309'>Consulta direta para DID: {TARGET_DID}</p>"
+    
+    try:
+        raw_conn = get_db_connection()
+        if raw_conn:
+            raw_cursor = raw_conn.cursor(dictionary=True)
+            
+            # 1. Pegar User ID
+            raw_cursor.execute("SELECT user_id, bluesky_handle FROM user_bluesky_profiles WHERE bluesky_did = %s", (TARGET_DID,))
+            user_target = raw_cursor.fetchone()
+            
+            if user_target:
+                html_output += f"<p><strong>Alvo:</strong> {user_target['bluesky_handle']} (ID: {user_target['user_id']})</p>"
+                
+                # 2. Query Bruta
+                raw_cursor.execute("SELECT * FROM user_badges WHERE user_id = %s", (user_target['user_id'],))
+                raw_rows = raw_cursor.fetchall()
+                
+                if raw_rows:
+                    html_output += "<table style='width:100%; border-collapse: collapse; font-size: 0.9em; color:black; background:white;'>"
+                    html_output += "<tr style='background: #fde68a;'><th>ID</th><th>Badge ID</th><th>Applied By</th><th>Date</th></tr>"
+                    for r in raw_rows:
+                        date_str = str(r['applied_at'])
+                        html_output += "<tr style='border-bottom:1px solid #ddd;'>"
+                        html_output += f"<td style='padding:4px;'>{r['id']}</td>"
+                        html_output += f"<td style='padding:4px;'>{r['badge_id']}</td>"
+                        html_output += f"<td style='padding:4px;'>{r['applied_by']}</td>"
+                        html_output += f"<td style='padding:4px;'>{date_str}</td>"
+                        html_output += "</tr>"
+                    html_output += "</table>"
+                else:
+                    html_output += "<p style='color:red; font-weight:bold;'>ZERO registros encontrados na tabela 'user_badges'.</p>"
+            else:
+                 html_output += "<p>Usuário não encontrado para este DID.</p>"
+
+            raw_cursor.close()
+            raw_conn.close()
+        else:
+             html_output += "<div>Sem conexão DB.</div>"
+
+    except Exception as e:
+        html_output += f"<div class='status-err'>Erro Raw Check: {str(e)}</div>"
+        
     html_output += "</div>"
 
     # 3. Teste de Integridade de Dados (Query Real)
