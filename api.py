@@ -208,6 +208,54 @@ def debug_page():
     <body>
         <h1>🔍 Diva Labeler Diagnostic Tool</h1>
     """
+    # 0. DASHBOARD DE STATUS (Conectividade)
+    html_output += "<div style='background: #1e293b; border: 1px solid #334155; padding: 20px; margin-bottom: 20px; border-radius: 8px; text-align:center;'>"
+    html_output += "<h3 style='margin-top:0; color: #cbd5e1;'>📡 Connectivity Status</h3>"
+    html_output += "<div style='display:flex; justify_content:space-around; align-items:center; font-weight:bold; font-size:1.1em;'>"
+
+    # RENDER (SELF)
+    html_output += "<div><span style='font-size:2em'>🐍</span><br>Render<br><small style='color:#4ade80'>ONLINE</small></div>"
+
+    # SETA
+    html_output += "<div style='font-size:1.5em; color:#94a3b8;'>➜</div>"
+
+    # DB CHECK
+    db_status = "UNKNOWN"
+    db_color = "#f59e0b"
+    try:
+        conn = get_db_connection()
+        if conn and conn.is_connected():
+            db_status = "CONNECTED"
+            db_color = "#4ade80"
+            conn.close()
+        else:
+            db_status = "FAILED"
+            db_color = "#f87171"
+    except:
+        db_status = "ERROR"
+        db_color = "#f87171"
+
+    html_output += f"<div><span style='font-size:2em'>🛢️</span><br>MySQL<br><small style='color:{db_color}'>{db_status}</small></div>"
+
+    # SETA
+    html_output += "<div style='font-size:1.5em; color:#94a3b8;'>➜</div>"
+
+    # BLUESKY CHECK
+    bsky_status = "UNKNOWN"
+    bsky_color = "#f59e0b"
+    try:
+        c = get_client()
+        # Ping rápido para verificar validade do token
+        if c.me.did:
+            bsky_status = "CONNECTED"
+            bsky_color = "#4ade80"
+    except:
+        bsky_status = "FAILED"
+        bsky_color = "#f87171"
+
+    html_output += f"<div><span style='font-size:2em'>🦋</span><br>Bluesky<br><small style='color:{bsky_color}'>{bsky_status}</small></div>"
+
+    html_output += "</div></div>"
 
     # 1. Teste de Variáveis de Ambiente
     html_output += "<h2>1. Variáveis de Ambiente</h2><div class='card'>"
