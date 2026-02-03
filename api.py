@@ -65,7 +65,8 @@ def apply_label_via_repo(subject_did, badge_name, negate=False):
     print(f"🔄 {action_name} BADGE '{badge_name}' PARA {subject_did}")
 
     # 1. Criar o objeto Label usando o Modelo Oficial
-    label_record = models.ComAtprotoLabelDefsLabel(
+    # Fix: Usar a classe aninhada ComAtprotoLabelDefs.Label
+    label_record = models.ComAtprotoLabelDefs.Label(
         src=c.me.did,
         uri=subject_did,
         val=badge_name,
