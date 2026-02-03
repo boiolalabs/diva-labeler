@@ -5,12 +5,11 @@
   "scripts": {
     "start": "npx tsx src/main.ts",
     "dev": "npx tsx --watch src/main.ts",
-    "format": "bunx prettier --write .",
-    "lint": "bunx eslint .",
-    "lint:fix": "bunx eslint --fix .",
-    "set-posts": "bunx tsx src/set-posts.ts",
-    "set-labels": "bunx tsx src/set-labels.ts",
-    "prepare": "bunx husky install"
+    "format": "npx prettier --write .",
+    "lint": "npx eslint .",
+    "lint:fix": "npx eslint --fix .",
+    "set-posts": "npx tsx src/set-posts.ts",
+    "set-labels": "npx tsx src/set-labels.ts"
   },
   "lint-staged": {
     "*": "prettier --ignore-unknown --write"
