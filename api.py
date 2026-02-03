@@ -1,124 +1,408 @@
-from flask import Flask, jsonify, request
+from flask import Flask, request, jsonify
 from flask_cors import CORS
+from atproto import Client, models
 import os
 import mysql.connector
-from dotenv import load_dotenv
-
-# Carrega variáveis de ambiente
-load_dotenv(override=True)
+import time
+import json
+from datetime import datetime, timezone
 
 app = Flask(__name__)
-CORS(app) # Permite conexões externas
+CORS(app)
 
-# Configurações do Banco
+# Cliente Bluesky (singleton)
+client = None
+
+def get_client():
+    """Get authenticated Bluesky client"""
+    global client
+    
+    if client is None:
+        client = Client()
+        handle = os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
+        password = os.getenv('BLUESKY_PASSWORD')
+        
+        if not password:
+            raise ValueError('BLUESKY_PASSWORD not set')
+        
+        try:
+            client.login(handle, password)
+            print(f"✅ Logged in as {handle}")
+            try:
+                print(f"   DID: {client.me.did}")
+            except:
+                pass
+        except Exception as e:
+            print(f"❌ Login failed: {e}")
+            raise
+    
+    return client
+
 def get_db_connection():
-    return mysql.connector.connect(
-        host=os.getenv('DB_HOST'),
-        user=os.getenv('DB_USER'),
-        password=os.getenv('DB_PASSWORD'),
-        database=os.getenv('DB_NAME'),
-        charset='utf8mb4',
-        collation='utf8mb4_unicode_ci'
+    """Establish database connection"""
+    try:
+        connection = mysql.connector.connect(
+            host=os.getenv('DB_HOST'),
+            user=os.getenv('DB_USER'),
+            password=os.getenv('DB_PASSWORD'),
+            database=os.getenv('DB_NAME'),
+            connect_timeout=10
+        )
+        return connection
+    except Exception as e:
+        print(f"❌ Database connection failed: {e}")
+        raise e
+
+def apply_label_via_repo(subject_did, badge_name, negate=False):
+    """
+    Cria ou remove um label gravando DIRETAMENTE no Repositório do Labeler.
+    (Self-Labeling / Repo Labeler)
+    """
+    c = get_client()
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    
+    action_name = "REMOVING" if negate else "ADDING"
+    print(f"🔄 {action_name} BADGE '{badge_name}' PARA {subject_did}")
+
+    # 1. Criar o objeto Label usando o Modelo Oficial
+    label_record = models.ComAtprotoLabelDefsLabel(
+        src=c.me.did,
+        uri=subject_did,
+        val=badge_name,
+        neg=negate,
+        cts=now
     )
+
+    # 2. Montar o payload para o create_record
+    data_payload = {
+        "repo": c.me.did,
+        "collection": "com.atproto.label.defs",
+        "record": label_record
+    }
+
+    try:
+        print(f"📤 Sending create_record to Self Repo...")
+        
+        # 3. Enviar
+        response = c.com.atproto.repo.create_record(data=data_payload)
+        
+        print(f"✅ Success: {response}")
+        return {
+            "success": True,
+            "data": str(response)
+        }
+        
+    except Exception as e:
+        print(f"❌ Error in create_record: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+# ============================================================================
+# ROTA QUE FALTAVA: ATENDER O TELEFONE DO BLUESKY (LEITURA)
+# ============================================================================
+@app.route('/xrpc/com.atproto.label.queryLabels', methods=['GET'])
+def query_labels():
+    uri_patterns = request.args.getlist('uriPatterns')
+    labels = []
+    
+    # Tenta pegar DID do labeler
+    try:
+        c = get_client()
+        my_did = c.me.did
+    except:
+        my_did = "did:plc:bmx5j2ukbbixbn4lo5itsf5v" # Fallback DID
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"cursor": "0", "labels": []})
+
+    try:
+        cursor = conn.cursor(dictionary=True)
+        
+        for pattern in uri_patterns:
+            if pattern.startswith('did:'):
+                # A MESMA QUERY PODEROSA QUE USA AS 3 TABELAS
+                query = """
+                    SELECT bb.label_id, ub.created_at
+                    FROM user_badges ub
+                    JOIN bluesky_badges bb ON ub.badge_id = bb.id
+                    JOIN user_bluesky_profiles ubp ON ub.user_id = ubp.user_id
+                    WHERE ubp.bluesky_did = %s
+                """
+                
+                cursor.execute(query, (pattern,))
+                results = cursor.fetchall()
+                
+                for row in results:
+                    cts = datetime.now(timezone.utc).isoformat()
+                    if row.get('created_at'):
+                        try:
+                            # Tenta converter se for objeto datetime
+                            cts = row['created_at'].isoformat() + "Z"
+                        except:
+                            # Se já for string
+                            cts = str(row['created_at'])
+                    
+                    labels.append({
+                        "src": my_did,
+                        "uri": pattern,
+                        "val": row['label_id'],
+                        "cts": cts,
+                        "ver": 1
+                    })
+        
+        cursor.close()
+        conn.close()
+    
+    except Exception as e:
+        print(f"❌ Erro na Query de Leitura: {e}")
+        if conn and conn.is_connected(): conn.close()
+
+    return jsonify({"cursor": "0", "labels": labels})
 
 @app.route('/')
 def home():
-    return """
-    <h1>Diva Labeler API 💅</h1>
-    <p>O servidor está online!</p>
-    <p>Acesse <a href="/debug">/debug</a> para ver o diagnóstico.</p>
-    """
+    return jsonify({
+        'status': 'healthy',
+        'service': 'Diva Labeler',
+        'version': '3.6.1',
+        'method': 'Repo Writer (Simple Labeler)',
+        'labeler': os.getenv('BLUESKY_HANDLE', 'labeler.boio.la')
+    })
+
+@app.route('/health')
+def health():
+    return jsonify({'status': 'healthy'})
 
 @app.route('/debug')
-def debug():
-    """Rota de diagnóstico para verificar saúde do sistema"""
-    status = {
-        "env_vars": {},
-        "database": {"status": "UNKNOWN", "message": ""},
-        "integrity": {"did_found": False, "did": "did:plc:bmx5j2ukbbixbn4lo5itsf5v"}
-    }
+def debug_page():
+    """
+    Rota de Diagnóstico Visual (HTML) para rastrear falhas de Badges.
+    Testa variáveis de ambiente, conexão DB, integridade de dados e saída JSON.
+    Aceita ?did=did:plc:... para testar usuários específicos.
+    """
+    # 1. Parâmetros Dinâmicos
+    TARGET_DID = request.args.get('did', 'did:plc:bmx5j2ukbbixbn4lo5itsf5v')
     
-    # 1. Verificar Variáveis de Ambiente (Mascarando senhas)
-    vars_to_check = ['DB_HOST', 'DB_USER', 'DB_NAME', 'BLUESKY_HANDLE', 'BLUESKY_PASSWORD']
-    for var in vars_to_check:
-        value = os.getenv(var)
-        if var == 'BLUESKY_PASSWORD' or var == 'DB_PASSWORD':
-            display = "******" if value else "MISSING"
-        else:
-            display = value if value else "MISSING"
-        status["env_vars"][var] = display
-
-    # 2. Testar Conexão MySQL
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT VERSION()")
-        version = cursor.fetchone()
-        status["database"]["status"] = "CONNECTED"
-        status["database"]["message"] = f"MySQL Version: {version[0]}"
-        
-        # 3. Testar Integridade (Verificar se o DID do labeler existe)
-        target_did = "did:plc:bmx5j2ukbbixbn4lo5itsf5v" # Seu DID Fixo
-        
-        # Tenta buscar na tabela de perfis
-        cursor.execute(f"SELECT handle FROM user_bluesky_profiles WHERE did = '{target_did}'")
-        user = cursor.fetchone()
-        
-        if user:
-            status["integrity"]["did_found"] = True
-            status["integrity"]["message"] = f"Usuário encontrado: {user[0]}"
-        else:
-            status["integrity"]["did_found"] = False
-            status["integrity"]["message"] = "DID do Labeler não está na tabela 'user_bluesky_profiles'"
-            
-        conn.close()
-        
-    except Exception as e:
-        status["database"]["status"] = "ERROR"
-        status["database"]["message"] = str(e)
-
-    # Gerar HTML Bonito para visualização
-    html = f"""
+    html_output = """
     <html>
     <head>
-        <title>Diagnóstico Diva Labeler</title>
+        <title>Diva Labeler Debugger</title>
         <style>
-            body {{ font-family: sans-serif; padding: 20px; background: #f4f4f9; }}
-            .card {{ background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); max-width: 600px; margin: 0 auto; }}
-            h1 {{ color: #333; border-bottom: 2px solid #6200ea; padding-bottom: 10px; }}
-            .status {{ font-weight: bold; padding: 5px 10px; border-radius: 4px; display: inline-block; }}
-            .ok {{ background: #e8f5e9; color: #2e7d32; }}
-            .error {{ background: #ffebee; color: #c62828; }}
-            pre {{ background: #eee; padding: 10px; border-radius: 4px; overflow-x: auto; }}
+            body { background: #0f172a; color: #f8fafc; font-family: monospace; padding: 2rem; }
+            h1 { color: #818cf8; border-bottom: 2px solid #334155; padding-bottom: 0.5rem; }
+            h2 { color: #cbd5e1; margin-top: 2rem; border-left: 4px solid #6366f1; padding-left: 10px; }
+            .status-ok { color: #4ade80; font-weight: bold; }
+            .status-err { color: #f87171; font-weight: bold; }
+            .status-missing { color: #fbbf24; font-weight: bold; }
+            .card { background: #1e293b; padding: 1.5rem; border-radius: 0.5rem; border: 1px solid #334155; margin-bottom: 1rem; }
+            pre { background: #000; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; color: #a5f3fc; }
         </style>
     </head>
     <body>
-        <div class="card">
-            <h1>🔍 Diva Labeler Diagnostic</h1>
-            
-            <h3>1. Variáveis de Ambiente</h3>
-            <ul>
-                {''.join([f"<li><b>{k}:</b> {v}</li>" for k,v in status['env_vars'].items()])}
-            </ul>
-
-            <h3>2. Conexão MySQL</h3>
-            <div class="status {'ok' if status['database']['status'] == 'CONNECTED' else 'error'}">
-                Status: {status['database']['status']}
-            </div>
-            <p>{status['database']['message']}</p>
-
-            <h3>3. Integridade (DID Mestre)</h3>
-            <div class="status {'ok' if status['integrity']['did_found'] else 'error'}">
-                {status['integrity']['message']}
-            </div>
-            <p>DID Buscado: {status['integrity']['did']}</p>
-        </div>
-    </body>
-    </html>
+        <h1>🔍 Diva Labeler Diagnostic Tool</h1>
     """
-    return html
+
+    # 1. Teste de Variáveis de Ambiente
+    html_output += "<h2>1. Variáveis de Ambiente</h2><div class='card'>"
+    env_vars = ['DB_HOST', 'DB_USER', 'DB_NAME', 'BLUESKY_HANDLE', 'BLUESKY_PASSWORD']
+    
+    for var in env_vars:
+        val = os.getenv(var)
+        status = "<span class='status-ok'>OK</span>" if val else "<span class='status-missing'>MISSING</span>"
+        safe_val = "******" if 'PASSWORD' in var and val else (val if val else "Not Set")
+        html_output += f"<div>{var}: {status} <span style='color: #64748b'>({safe_val})</span></div>"
+    html_output += "</div>"
+
+    # 1.5 Identidade Autenticada
+    html_output += "<h2>1.5 Identidade Autenticada (Client)</h2><div class='card'>"
+    try:
+        c = get_client()
+        html_output += f"<div>Handle: <span class='status-ok'>{c.me.handle}</span></div>"
+        html_output += f"<div>DID: <span class='status-ok'>{c.me.did}</span></div>"
+    except Exception as e:
+        html_output += f"<div>Status: <span class='status-err'>Not Authenticated</span> ({str(e)})</div>"
+    html_output += "</div>"
+    
+    # 2. Teste de Conexão MySQL
+    html_output += "<h2>2. Conexão MySQL</h2><div class='card'>"
+    conn = None
+    try:
+        start_time = time.time()
+        conn = get_db_connection()
+        latency = (time.time() - start_time) * 1000
+        html_output += f"<div>Status: <span class='status-ok'>CONNECTED</span></div>"
+        html_output += f"<div>Latency: {latency:.2f}ms</div>"
+        html_output += f"<div>Server Info: {conn.get_server_info()}</div>"
+    except Exception as e:
+        html_output += f"<div>Status: <span class='status-err'>FAILED</span></div>"
+        html_output += f"<div>Error: {str(e)}</div>"
+    html_output += "</div>"
+
+    # 3. Teste de Integridade de Dados (Query Real)
+    html_output += f"<h2>3. Integridade de Dados (DID: {TARGET_DID})</h2><div class='card'>"
+    
+    badges_found = []
+    
+    if conn:
+        try:
+            cursor = conn.cursor(dictionary=True)
+            
+            # 3.1 Verificar se o DID existe no user_bluesky_profiles
+            cursor.execute("SELECT user_id, bluesky_handle FROM user_bluesky_profiles WHERE bluesky_did = %s", (TARGET_DID,))
+            profile = cursor.fetchone()
+            
+            if profile:
+                html_output += f"<div>✅ Perfil encontrado: <strong>{profile['bluesky_handle']}</strong> (User ID: {profile['user_id']})</div>"
+                
+                # 3.2 Buscar Badges para este usuário
+                query = """
+                    SELECT bb.label_id, bb.badge_name 
+                    FROM user_badges ub
+                    JOIN bluesky_badges bb ON bb.id = ub.badge_id
+                    WHERE ub.user_id = %s
+                """
+                cursor.execute(query, (profile['user_id'],))
+                badges = cursor.fetchall()
+                
+                if badges:
+                    html_output += f"<div>✅ Badges encontrados: <span class='status-ok'>{len(badges)}</span></div><ul>"
+                    for b in badges:
+                        html_output += f"<li>Label Slug (val): <strong>{b['label_id']}</strong> ({b['badge_name']})</li>"
+                        badges_found.append(b['label_id'])
+                    html_output += "</ul>"
+                else:
+                    html_output += "<div>⚠️ Perfil existe, mas <strong>NÃO TEM BADGES</strong> associados na tabela 'user_badges'.</div>"
+            else:
+                html_output += f"<div>❌ DID não encontrado na tabela 'user_bluesky_profiles'.</div>"
+            
+            cursor.close()
+            conn.close()
+            
+        except Exception as e:
+            html_output += f"<div class='status-err'>Erro SQL: {str(e)}</div>"
+    else:
+        html_output += "<div>Falha na conexão impediu este teste.</div>"
+    
+    html_output += "</div>"
+
+    # 4. Simulação output JSON (QueryLabels)
+    html_output += "<h2>4. Simulação JSON Output</h2><div class='card'>"
+    html_output += f"<div>Para QueryLabels(uri={TARGET_DID})</div>"
+    
+    simulated_labels = []
+    current_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    
+    labeler_did = "did:plc:placeholder_labeler_did"
+    try:
+        if client and hasattr(client, 'me'):
+             labeler_did = client.me.did
+    except:
+        pass
+
+    for label_val in badges_found:
+        simulated_labels.append({
+            "src": labeler_did,
+            "uri": TARGET_DID,
+            "cid": "bafyre...",
+            "val": label_val,
+            "cts": current_time
+        })
+    
+    json_output = {
+        "cursor": "0",
+        "labels": simulated_labels
+    }
+    
+    html_output += f"<pre>{json.dumps(json_output, indent=2)}</pre>"
+    
+    if not badges_found:
+        html_output += "<div class='status-err'>⚠️ ALERTA: A lista 'labels' está vazia! O usuário não verá labels.</div>"
+    else:
+        html_output += "<div class='status-ok'>✅ Tudo certo! JSON contém labels.</div>"
+        
+    html_output += "</div></body></html>"
+    
+    return html_output
+
+@app.route('/apply-badge', methods=['POST'])
+def apply_badge():
+    try:
+        data = request.json
+        user_did = data.get('did')
+        label_value = data.get('label')
+        
+        if not user_did or not label_value:
+            return jsonify({'success': False, 'error': 'Missing parameters'}), 400
+        
+        if not user_did.startswith('did:'):
+            return jsonify({'success': False, 'error': 'Invalid DID format'}), 400
+            
+        print(f"\n{'='*60}\n📝 APPLYING BADGE\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
+        
+        # negate=False -> ADICIONAR
+        result = apply_label_via_repo(user_did, label_value, negate=False)
+        
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'message': f'Badge "{label_value}" aplicado com sucesso',
+                'data': result.get('data')
+            })
+        else:
+            return jsonify({'success': False, 'error': result['error']}), 500
+        
+    except Exception as e:
+        print(f"❌ EXCEPTION: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/remove-badge', methods=['POST'])
+def remove_badge():
+    try:
+        data = request.json
+        user_did = data.get('did')
+        label_value = data.get('label')
+        
+        if not user_did or not label_value:
+            return jsonify({'success': False, 'error': 'Missing parameters'}), 400
+            
+        print(f"\n{'='*60}\n🗑️  REMOVING BADGE\n   User: {user_did}\n   Badge: {label_value}\n{'='*60}\n")
+        
+        # negate=True -> REMOVER
+        result = apply_label_via_repo(user_did, label_value, negate=True)
+        
+        if result['success']:
+            return jsonify({'success': True, 'message': 'Badge removido com sucesso'})
+        else:
+            return jsonify({'success': False, 'error': result['error']}), 500
+        
+    except Exception as e:
+        print(f"❌ EXCEPTION: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/test-connection', methods=['GET'])
+def test_connection():
+    try:
+        c = get_client()
+        return jsonify({
+            'success': True,
+            'message': 'Connected to Bluesky',
+            'labeler': {
+                'did': c.me.did,
+                'handle': c.me.handle
+            }
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
-    # Porta padrão do Render é dada pela variável PORT
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.getenv('PORT', 5000))
+    print(f"\n{'='*60}")
+    print(f"🚀 DIVA LABELER v3.6.1")
+    print(f"   Port: {port}")
+    print(f"   Method: Repo Writer (Simple)")
+    print(f"{'='*60}\n")
     app.run(host='0.0.0.0', port=port)
