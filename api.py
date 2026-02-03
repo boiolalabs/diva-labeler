@@ -290,6 +290,61 @@ def debug_page():
     
     html_output += "</div>"
 
+    # 3.5 Auditoria Geral de Badges (Visão do Python)
+    html_output += f"<h2>3.5 Auditoria Geral (Visão do Python)</h2><div class='card' style='background: #fff1f2; border-color: #fecdd3;'>"
+    html_output += "<p style='color:#be123c'>O que este container (Render) enxerga no banco:</p>"
+    
+    if conn:
+        try:
+            audit_cursor = conn.cursor(dictionary=True)
+            # Reconecta para garantir
+            if not conn.is_connected():
+                conn.reconnect()
+                
+            audit_query = """
+                SELECT 
+                    ubp.user_id, 
+                    ubp.bluesky_handle, 
+                    ubp.bluesky_did,
+                    GROUP_CONCAT(CONCAT(bb.badge_name, ' (', bb.label_id, ')') SEPARATOR '<br>') as badges_list
+                FROM user_bluesky_profiles ubp
+                LEFT JOIN user_badges ub ON ubp.user_id = ub.user_id
+                LEFT JOIN bluesky_badges bb ON ub.badge_id = bb.id
+                GROUP BY ubp.user_id
+                ORDER BY ubp.user_id DESC
+                LIMIT 50
+            """
+            audit_cursor.execute(audit_query)
+            audit_data = audit_cursor.fetchall()
+            
+            if audit_data:
+                html_output += "<table style='width:100%; border-collapse: collapse; font-size: 0.85em; color: #000;'>"
+                html_output += "<tr style='background: #ffe4e6; color: #881337;'><th style='padding:8px;'>User</th><th style='padding:8px;'>DID Status</th><th style='padding:8px;'>Badges</th></tr>"
+                
+                for row in audit_data:
+                    did_str = row['bluesky_did']
+                    did_display = f"<span style='color:green'>✅ OK</span><br><small>{did_str[:15]}...</small>" if did_str else "<span style='color:red'>❌ SEM DID</span>"
+                    
+                    badges_raw = row['badges_list']
+                    badges_display = f"<strong style='color: #059669'>{badges_raw}</strong>" if badges_raw else "<span style='color: #999'>Nenhum</span>"
+                    
+                    html_output += f"<tr style='background: white; border-bottom: 1px solid #ddd;'>"
+                    html_output += f"<td style='padding:8px;'><strong>{row['bluesky_handle']}</strong><br><small>ID: {row['user_id']}</small></td>"
+                    html_output += f"<td style='padding:8px;'>{did_display}</td>"
+                    html_output += f"<td style='padding:8px;'>{badges_display}</td>"
+                    html_output += "</tr>"
+                html_output += "</table>"
+            else:
+                html_output += "<p style='color:black'>Nenhum dado encontrado.</p>"
+                
+            audit_cursor.close()
+        except Exception as e:
+            html_output += f"<div class='status-err'>Erro Audit: {str(e)}</div>"
+    else:
+        html_output += "<div>Sem conexão DB.</div>"
+    
+    html_output += "</div>"
+
     # 4. Simulação output JSON (QueryLabels)
     html_output += "<h2>4. Simulação JSON Output</h2><div class='card'>"
     html_output += f"<div>Para QueryLabels(uri={TARGET_DID})</div>"
