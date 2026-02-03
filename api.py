@@ -75,10 +75,12 @@ def apply_label_via_repo(subject_did, badge_name, negate=False):
     )
 
     # 2. Montar o payload para o create_record
+    # Fix: Converter o modelo Pydantic para dicionário e remover campos nulos/extras desnecessários
+    # O SDK espera um dict no campo 'record'
     data_payload = {
         "repo": c.me.did,
         "collection": "com.atproto.label.defs",
-        "record": label_record
+        "record": label_record.model_dump()
     }
 
     try:
