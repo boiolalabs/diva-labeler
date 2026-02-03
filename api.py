@@ -83,6 +83,11 @@ def apply_label_via_repo(subject_did, badge_name, negate=False):
     if 'ver' not in record_dict: # Opcional, mas bom forçar para v1
         record_dict['ver'] = 1
 
+    # Fix: Remover $type e py_type se existirem, pois create_record pode adicionar o seu próprio
+    # e o PDS pode rejeitar se vier duplicado ou específico demais (#label vs main)
+    record_dict.pop('$type', None)
+    record_dict.pop('py_type', None)
+
     data_payload = {
         "repo": c.me.did,
         "collection": "com.atproto.label.defs",
@@ -480,9 +485,11 @@ def debug_page():
         try:
             # Tentar importar de models se precisar, mas o response vem como objeto
             record_response = c.com.atproto.repo.get_record(
-                repo=c.me.did,
-                collection='app.bsky.labeler.service',
-                rkey='self'
+                params={
+                    'repo': c.me.did,
+                    'collection': 'app.bsky.labeler.service',
+                    'rkey': 'self'
+                }
             )
             
             # O 'value' contém o record real
