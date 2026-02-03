@@ -366,7 +366,14 @@ def debug_page():
                     ubp.user_id, 
                     ubp.bluesky_handle, 
                     ubp.bluesky_did,
-                    GROUP_CONCAT(CONCAT(bb.badge_name, ' (', bb.label_id, ')') SEPARATOR '<br>') as badges_list
+                    GROUP_CONCAT(
+                        CONCAT(
+                            COALESCE(bb.badge_name, '?? BADGE DELETADO ??'), 
+                            ' (ID: ', 
+                            ub.badge_id, 
+                            ')'
+                        ) SEPARATOR '<br>'
+                    ) as badges_list
                 FROM user_bluesky_profiles ubp
                 LEFT JOIN user_badges ub ON ubp.user_id = ub.user_id
                 LEFT JOIN bluesky_badges bb ON ub.badge_id = bb.id
