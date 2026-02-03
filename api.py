@@ -296,12 +296,13 @@ def debug_page():
     html_output += f"<h2>3.5 Auditoria Geral (Visão do Python)</h2><div class='card' style='background: #fff1f2; border-color: #fecdd3;'>"
     html_output += "<p style='color:#be123c'>O que este container (Render) enxerga no banco:</p>"
     
-    if conn:
-        try:
-            audit_cursor = conn.cursor(dictionary=True)
-            # Reconecta para garantir
-            if not conn.is_connected():
-                conn.reconnect()
+    
+    # Abrir nova conexão específica para auditoria
+    try:
+        audit_conn = get_db_connection()
+        if audit_conn:
+            audit_cursor = audit_conn.cursor(dictionary=True)
+            # Query já definida abaixo...
                 
             audit_query = """
                 SELECT 
@@ -340,10 +341,10 @@ def debug_page():
                 html_output += "<p style='color:black'>Nenhum dado encontrado.</p>"
                 
             audit_cursor.close()
-        except Exception as e:
-            html_output += f"<div class='status-err'>Erro Audit: {str(e)}</div>"
-    else:
-        html_output += "<div>Sem conexão DB.</div>"
+            audit_conn.close()
+            
+    except Exception as e:
+        html_output += f"<div class='status-err'>Erro Audit: {str(e)}</div>"
     
     html_output += "</div>"
 
